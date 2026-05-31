@@ -1,0 +1,7 @@
+{
+  "_note": "Map NFC tag UIDs to scene names. UIDs are uppercase hex, no colons.",
+  "_hint": "Tap a tag then check /tag/<uid> \u2014 it returns the UID if not registered yet.",
+  "tags": {
+    "AABBCCDD": "movie"
+  }
+}

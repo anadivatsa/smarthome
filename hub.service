@@ -1,0 +1,19 @@
+[Unit]
+Description=Smart Home Hub
+After=network-online.target wiz-lamp.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=anadivatsa
+WorkingDirectory=/home/anadivatsa/smarthome
+ExecStart=/home/anadivatsa/smarthome/venv/bin/python hub.py
+Restart=on-failure
+RestartSec=5
+ExecStartPre=/bin/sleep 3
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

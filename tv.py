@@ -177,18 +177,95 @@ def tv_mute() -> tuple[bool, str | None]:
 
 
 def tv_set_volume(delta: int) -> tuple[bool, str | None]:
-    """Raise or lower volume by |delta| steps. Positive = up, negative = down."""
+    """Relative volume change by |delta| steps."""
     key   = "KEY_VOLUMEUP" if delta > 0 else "KEY_VOLUMEDOWN"
     steps = abs(delta)
     try:
         with _connect() as tv:
             for _ in range(steps):
                 tv.send_key(key)
-                time.sleep(0.12)
+                time.sleep(0.10)
             _persist_token(tv)
         return True, None
     except Exception as exc:
         return False, str(exc)
+
+
+def tv_set_abs_volume(target: int) -> tuple[bool, str | None]:
+    """Set an absolute volume level (0–100).
+    Zeroes out first by hammering KEY_VOLUMEDOWN, then counts up to target."""
+    target = max(0, min(100, target))
+    try:
+        with _connect() as tv:
+            # Zero out from any starting point (60 presses covers max volume)
+            for _ in range(60):
+                tv.send_key("KEY_VOLUMEDOWN")
+                time.sleep(0.05)
+            # Count up to target
+            for _ in range(target):
+                tv.send_key("KEY_VOLUMEUP")
+                time.sleep(0.07)
+            _persist_token(tv)
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
+
+
+# Volume ramp — runs in a background thread
+_ramp_stop = None
+
+_RAMP_WATCHDOG_INTERVAL = 4.0   # seconds between TV polls during a ramp
+
+
+def _tv_ramp_watchdog(stop: "threading.Event") -> None:
+    """Stop the ramp if the TV is turned off or goes to standby externally."""
+    while not stop.wait(_RAMP_WATCHDOG_INTERVAL):
+        status = tv_status()
+        if not status.get("reachable") or status.get("power") == "standby":
+            stop.set()
+            return
+
+
+def tv_start_volume_ramp(from_vol: int, to_vol: int, over_seconds: int) -> None:
+    """Gradually ramp volume from from_vol to to_vol over over_seconds seconds.
+    Cancels any existing ramp first."""
+    global _ramp_stop
+    import threading
+
+    if _ramp_stop is not None:
+        _ramp_stop.set()
+
+    stop = threading.Event()
+    _ramp_stop = stop
+
+    steps = abs(to_vol - from_vol)
+    if steps == 0:
+        return
+
+    key      = "KEY_VOLUMEUP" if to_vol > from_vol else "KEY_VOLUMEDOWN"
+    interval = over_seconds / steps
+
+    def _ramp():
+        for _ in range(steps):
+            if stop.is_set():
+                return
+            try:
+                with _connect() as tv:
+                    tv.send_key(key)
+                    _persist_token(tv)
+            except Exception:
+                pass
+            stop.wait(interval)
+
+    threading.Thread(target=_ramp, daemon=True).start()
+    threading.Thread(target=_tv_ramp_watchdog, args=(stop,), daemon=True).start()
+
+
+def tv_stop_volume_ramp() -> None:
+    global _ramp_stop
+    if _ramp_stop:
+        _ramp_stop.set()
+        _ramp_stop = None
 
 
 # ---------------------------------------------------------------------------
@@ -206,13 +283,22 @@ def tv_source(name: str) -> tuple[bool, str | None]:
 # Apps
 # ---------------------------------------------------------------------------
 
-def tv_launch_app(name_or_id: str) -> tuple[bool, str | None]:
-    """Launch app via REST API POST — reliably brings app to foreground.
-    WebSocket run_app() is silently ignored when TV is on a live/HDMI source."""
+def tv_launch_app(name_or_id: str, deep_link: str | None = None) -> tuple[bool, str | None]:
+    """Launch app via REST API POST.
+    deep_link: optional URL/ID passed to the app (e.g. YouTube playlist URL)."""
     app_id = APPS.get(name_or_id.lower(), name_or_id)
     try:
+        body = None
+        if deep_link:
+            body = json.dumps({
+                "id":   app_id,
+                "type": 2,
+                "params": {"data": deep_link},
+            })
         r = requests.post(
             f"http://{TV_IP}:8001/api/v2/applications/{app_id}",
+            data=body,
+            headers={"Content-Type": "application/json"} if body else {},
             timeout=8,
         )
         if r.status_code == 200:

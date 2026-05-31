@@ -21,7 +21,7 @@ A Raspberry Pi–hosted HTTP API that ties together a Samsung TV and a WiZ smart
     │                    │
     ▼                    ▼
 Samsung TV          WiZ Bulb
-192.168.1.2         192.168.1.9
+<TV_IP>              <LAMP_IP>
 WebSocket :8002     UDP (pywizlight)
 REST API  :8001
 ```
@@ -42,8 +42,8 @@ The hub proxies all `/lamp/*` requests to the lamp service, so external clients 
 | Device | Role | Address |
 |---|---|---|
 | Raspberry Pi | Runs both services 24/7 | — |
-| Samsung TV (UA43DUE76AKLXL, Tizen) | Controlled via WebSocket + REST | `192.168.1.2` |
-| WiZ smart bulb | Controlled via UDP (pywizlight) | `192.168.1.9` |
+| Samsung TV (Tizen) | Controlled via WebSocket + REST | `<TV_IP>` |
+| WiZ smart bulb | Controlled via UDP (pywizlight) | `<LAMP_IP>` |
 | NFC tags (optional) | Tap-to-scene triggers | — |
 
 ---

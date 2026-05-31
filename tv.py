@@ -1,7 +1,7 @@
 """
 Samsung TV controller — wraps samsungtvws for the hub.
 
-TV: 192.168.1.2  (UA43DUE76AKLXL, Tizen, WebSocket on port 8002)
+TV: set TV_IP env var  (Samsung Tizen, WebSocket on port 8002)
 Token saved to ~/.smarthome/tv_token.json after first pairing.
 """
 
@@ -17,8 +17,8 @@ try:
 except ImportError:
     SamsungTVWS = None
 
-TV_IP   = os.getenv("TV_IP",   "192.168.1.2")
-TV_MAC  = os.getenv("TV_MAC",  "28:e6:a9:28:ce:b0")   # for Wake-on-LAN
+TV_IP   = os.getenv("TV_IP",   "")
+TV_MAC  = os.getenv("TV_MAC",  "")   # for Wake-on-LAN
 TV_PORT = int(os.getenv("TV_PORT", "8002"))
 TV_NAME = "PiHub"
 TOKEN_FILE = Path.home() / ".smarthome" / "tv_token.json"

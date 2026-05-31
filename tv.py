@@ -7,6 +7,7 @@ Token saved to ~/.smarthome/tv_token.json after first pairing.
 
 import json
 import os
+import socket
 import time
 import requests
 from pathlib import Path
@@ -17,9 +18,14 @@ except ImportError:
     SamsungTVWS = None
 
 TV_IP   = os.getenv("TV_IP",   "192.168.1.2")
+TV_MAC  = os.getenv("TV_MAC",  "28:e6:a9:28:ce:b0")   # for Wake-on-LAN
 TV_PORT = int(os.getenv("TV_PORT", "8002"))
 TV_NAME = "PiHub"
 TOKEN_FILE = Path.home() / ".smarthome" / "tv_token.json"
+
+BOOT_WAIT    = 12   # seconds to wait after WoL before trying WebSocket
+WS_POLL_WAIT = 2    # seconds between WebSocket-ready polls
+WS_POLL_MAX  = 20   # max seconds to wait for WebSocket after power-on
 
 # Confirmed installed apps (discovered via rest_app_status probe)
 APPS = {
@@ -78,6 +84,7 @@ def _persist_token(tv):
 # ---------------------------------------------------------------------------
 
 def tv_status() -> dict:
+    """REST API on port 8001 — responds even in standby."""
     try:
         r = requests.get(f"http://{TV_IP}:8001/api/v2/", timeout=4)
         device = r.json().get("device", {})
@@ -88,15 +95,76 @@ def tv_status() -> dict:
             "power":     device.get("PowerState", "unknown"),
             "os":        device.get("OS"),
         }
-    except Exception as exc:
-        return {"reachable": False, "error": str(exc)}
+    except Exception:
+        return {"reachable": False, "power": "off"}
+
+
+def _ws_reachable() -> bool:
+    """Check if the WebSocket port is accepting connections."""
+    try:
+        s = socket.create_connection((TV_IP, TV_PORT), timeout=3)
+        s.close()
+        return True
+    except Exception:
+        return False
+
+
+def _wol() -> None:
+    """Send Wake-on-LAN magic packet to the TV."""
+    mac_bytes = bytes.fromhex(TV_MAC.replace(":", ""))
+    magic = b'\xff' * 6 + mac_bytes * 16
+    for dest in ("255.255.255.255", f"{TV_IP.rsplit('.',1)[0]}.255"):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            s.sendto(magic, (dest, 9))
+            s.close()
+        except Exception:
+            pass
+
+
+def _wait_for_ws(timeout: int = WS_POLL_MAX) -> bool:
+    """Poll until WebSocket port is ready or timeout expires."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _ws_reachable():
+            return True
+        time.sleep(WS_POLL_WAIT)
+    return False
 
 
 def tv_on() -> tuple[bool, str | None]:
-    return tv_key("KEY_POWER")
+    """
+    State-aware power-on — three cases:
+      fully off  → WoL magic packet, wait for boot
+      standby    → KEY_POWER (toggles on)
+      already on → do nothing
+    Returns (ok, error_or_none).
+    """
+    status = tv_status()
+    power  = status.get("power", "off")
+
+    # Already on — don't toggle it off by mistake
+    if status.get("reachable") and power == "on":
+        return True, None
+
+    # Standby — network reachable, screen off → toggle on
+    if status.get("reachable") and power in ("standby", "unknown"):
+        return tv_key("KEY_POWER")
+
+    # Fully off — send WoL, wait for WebSocket to come up
+    _wol()
+    time.sleep(BOOT_WAIT)          # give it time to start booting
+    ready = _wait_for_ws()
+    if not ready:
+        return False, "TV did not respond after Wake-on-LAN"
+    return True, None
 
 
 def tv_off() -> tuple[bool, str | None]:
+    status = tv_status()
+    if not status.get("reachable"):
+        return True, None          # already off, nothing to do
     return tv_key("KEY_POWEROFF")
 
 

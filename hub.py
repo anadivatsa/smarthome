@@ -93,14 +93,29 @@ def _run_scene(name: str) -> tuple[bool, dict]:
         volume = tv_cfg.get("volume")
         app    = tv_cfg.get("app")
 
-        if action == "on":
-            ok, err = TV.tv_on()
-            results["tv_power"] = {"ok": ok, "error": err}
-        elif action == "off":
+        if action == "off":
             ok, err = TV.tv_off()
             results["tv_power"] = {"ok": ok, "error": err}
             return
 
+        if action == "on":
+            # Bug fix: tv_on() is now state-aware — checks current power
+            # state and uses WoL if fully off, KEY_POWER if standby, skips
+            # if already on. Never blindly toggles.
+            ok, err = TV.tv_on()
+            results["tv_power"] = {"ok": ok, "error": err}
+            if not ok:
+                return
+
+            # Bug fix: wait for WebSocket to be ready before sending
+            # volume/app commands — TV needs a few seconds after boot.
+            if app or volume:
+                if not TV._wait_for_ws(timeout=15):
+                    results["tv_ready"] = {"ok": False, "error": "WebSocket not ready after power-on"}
+                    return
+                results["tv_ready"] = {"ok": True}
+
+        # Sequential: volume first, then app — order matters
         if volume:
             ok, err = TV.tv_set_volume(volume)
             results["tv_volume"] = {"ok": ok, "error": err}

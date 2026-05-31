@@ -19,6 +19,7 @@ NFC tags:   GET /tag/<uid>             tap → executes scene
 import json
 import os
 import threading
+import time
 from pathlib import Path
 
 import requests
@@ -89,39 +90,60 @@ def _run_scene(name: str) -> tuple[bool, dict]:
     def do_tv():
         if not tv_cfg:
             return
-        action = tv_cfg.get("action")
-        volume = tv_cfg.get("volume")
-        app    = tv_cfg.get("app")
+        action      = tv_cfg.get("action")
+        volume      = tv_cfg.get("volume")       # relative delta
+        volume_abs  = tv_cfg.get("volume_abs")   # absolute level 0-100
+        app         = tv_cfg.get("app")
+        playlist    = tv_cfg.get("playlist")     # deep-link URL/ID
+        post_launch = tv_cfg.get("post_launch")
+        volume_ramp = tv_cfg.get("volume_ramp")  # {"to": 60, "over": 120}
 
         if action == "off":
+            TV.tv_stop_volume_ramp()
             ok, err = TV.tv_off()
             results["tv_power"] = {"ok": ok, "error": err}
             return
 
         if action == "on":
-            # Bug fix: tv_on() is now state-aware — checks current power
-            # state and uses WoL if fully off, KEY_POWER if standby, skips
-            # if already on. Never blindly toggles.
             ok, err = TV.tv_on()
             results["tv_power"] = {"ok": ok, "error": err}
             if not ok:
                 return
-
-            # Bug fix: wait for WebSocket to be ready before sending
-            # volume/app commands — TV needs a few seconds after boot.
-            if app or volume:
+            if app or volume or volume_abs:
                 if not TV._wait_for_ws(timeout=15):
                     results["tv_ready"] = {"ok": False, "error": "WebSocket not ready after power-on"}
                     return
                 results["tv_ready"] = {"ok": True}
 
-        # Sequential: volume first, then app — order matters
-        if volume:
+        # Absolute volume first (zeroes out then counts up)
+        if volume_abs is not None:
+            ok, err = TV.tv_set_abs_volume(volume_abs)
+            results["tv_volume"] = {"ok": ok, "target": volume_abs, "error": err}
+        elif volume:
             ok, err = TV.tv_set_volume(volume)
-            results["tv_volume"] = {"ok": ok, "error": err}
+            results["tv_volume"] = {"ok": ok, "delta": volume, "error": err}
+
+        # Launch app with optional deep link
         if app:
-            ok, err = TV.tv_launch_app(app)
-            results["tv_app"] = {"ok": ok, "app": app, "error": err}
+            ok, err = TV.tv_launch_app(app, deep_link=playlist)
+            results["tv_app"] = {"ok": ok, "app": app, "playlist": playlist, "error": err}
+
+            # Post-launch key sequence (e.g. auto-select Netflix profile)
+            if ok and post_launch:
+                time.sleep(post_launch.get("delay", 3))
+                for key in post_launch.get("keys", []):
+                    TV.tv_key(key)
+                    time.sleep(0.3)
+
+            # Start background volume ramp after app is loaded
+            if ok and volume_ramp:
+                start_vol = volume_abs if volume_abs is not None else (volume or 0)
+                time.sleep(volume_ramp.get("delay", 3))
+                TV.tv_start_volume_ramp(
+                    from_vol    = start_vol,
+                    to_vol      = volume_ramp["to"],
+                    over_seconds= volume_ramp.get("over", 120),
+                )
 
     t_lamp = threading.Thread(target=do_lamp)
     t_tv   = threading.Thread(target=do_tv)

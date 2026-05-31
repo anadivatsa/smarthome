@@ -207,12 +207,17 @@ def tv_source(name: str) -> tuple[bool, str | None]:
 # ---------------------------------------------------------------------------
 
 def tv_launch_app(name_or_id: str) -> tuple[bool, str | None]:
+    """Launch app via REST API POST — reliably brings app to foreground.
+    WebSocket run_app() is silently ignored when TV is on a live/HDMI source."""
     app_id = APPS.get(name_or_id.lower(), name_or_id)
     try:
-        with _connect() as tv:
-            tv.run_app(app_id)
-            _persist_token(tv)
-        return True, None
+        r = requests.post(
+            f"http://{TV_IP}:8001/api/v2/applications/{app_id}",
+            timeout=8,
+        )
+        if r.status_code == 200:
+            return True, None
+        return False, f"HTTP {r.status_code}: {r.text[:100]}"
     except Exception as exc:
         return False, str(exc)
 

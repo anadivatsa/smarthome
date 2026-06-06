@@ -2,28 +2,27 @@
 """
 Hey Neo — offline wake word daemon.
 
-Wake word (pvporcupine) → command recognition (vosk) → hub HTTP call.
+Wake word (openWakeWord) → command recognition (vosk) → hub HTTP call.
 
 Setup:
-  1. Get a free Porcupine access key at console.picovoice.ai
-  2. Optionally train a custom "Hey Neo" wake word there and download the .ppn
-  3. Add both to config.env
-  4. Run install.sh to set up venv + vosk model + systemd service
+  1. Run install.sh — it trains the "Hey Neo" ONNX model and installs the service.
+  2. sudo systemctl start wakeword
+  No API keys required.
 """
 
 import json
 import logging
 import os
-import struct
 import threading
 import time
 from pathlib import Path
 
-import pvporcupine
+import numpy as np
 import pyaudio
 import requests
 import vosk
 from dotenv import load_dotenv
+from openwakeword.model import Model
 
 load_dotenv(Path(__file__).parent / "config.env")
 
@@ -31,11 +30,15 @@ load_dotenv(Path(__file__).parent / "config.env")
 # Config
 # ---------------------------------------------------------------------------
 
-PORCUPINE_KEY   = os.environ.get("PORCUPINE_KEY", "")
-WAKE_WORD_MODEL = os.getenv("WAKE_WORD_MODEL", "")
-HUB_URL         = os.getenv("HUB_URL", "http://localhost:5001")
-RECORD_SECONDS  = int(os.getenv("RECORD_SECONDS", "4"))
+OWW_MODEL      = os.getenv("OWW_MODEL", "hey_neo.onnx")
+OWW_THRESHOLD  = float(os.getenv("OWW_THRESHOLD", "0.5"))
+OWW_MODEL_PATH = Path(__file__).parent / OWW_MODEL
+HUB_URL        = os.getenv("HUB_URL", "http://localhost:5001")
+RECORD_SECONDS = int(os.getenv("RECORD_SECONDS", "4"))
 VOSK_MODEL_PATH = Path(__file__).parent / "vosk-model-small-en-us"
+
+SAMPLE_RATE = 16000
+CHUNK       = 1280   # 80 ms — openWakeWord's native chunk size
 
 logging.basicConfig(
     level=logging.INFO,
@@ -145,63 +148,52 @@ def _wake_feedback():
 # ---------------------------------------------------------------------------
 
 def main():
-    if not PORCUPINE_KEY:
-        logging.error("PORCUPINE_KEY not set in config.env — exiting.")
+    if not OWW_MODEL_PATH.exists():
+        logging.error(f"Wake word model not found: {OWW_MODEL_PATH} — run install.sh to train it.")
         return
 
     if not VOSK_MODEL_PATH.exists():
         logging.error(f"Vosk model not found at {VOSK_MODEL_PATH} — run install.sh first.")
         return
 
-    # Load Vosk model (slow — do once at startup)
     logging.info("Loading Vosk model...")
     vosk_model = vosk.Model(str(VOSK_MODEL_PATH))
 
-    # Init Porcupine
-    ppn = Path(WAKE_WORD_MODEL) if WAKE_WORD_MODEL else None
-    if ppn and ppn.exists():
-        porcupine = pvporcupine.create(
-            access_key=PORCUPINE_KEY,
-            keyword_paths=[str(ppn)],
-        )
-        logging.info(f"Wake word: custom model {ppn.name}")
-    else:
-        porcupine = pvporcupine.create(
-            access_key=PORCUPINE_KEY,
-            keywords=["hey google"],
-        )
-        logging.warning("No .ppn found — using built-in 'hey google' as fallback. "
-                        "Train a custom 'Hey Neo' at console.picovoice.ai")
+    logging.info(f"Loading openWakeWord model: {OWW_MODEL_PATH.name}")
+    oww = Model(wakeword_models=[str(OWW_MODEL_PATH)], inference_framework="onnx")
+    model_key = OWW_MODEL_PATH.stem  # "hey_neo"
 
     pa = pyaudio.PyAudio()
     stream = pa.open(
-        rate=porcupine.sample_rate,
+        rate=SAMPLE_RATE,
         channels=1,
         format=pyaudio.paInt16,
         input=True,
-        frames_per_buffer=porcupine.frame_length,
+        frames_per_buffer=CHUNK,
     )
 
-    logging.info(f"Listening... (hub: {HUB_URL})")
+    logging.info(f"Listening for 'Hey Neo'... (hub: {HUB_URL}, threshold: {OWW_THRESHOLD})")
 
     try:
         while True:
-            raw = stream.read(porcupine.frame_length, exception_on_overflow=False)
-            pcm = struct.unpack_from(f"{porcupine.frame_length}h", raw)
+            audio = np.frombuffer(
+                stream.read(CHUNK, exception_on_overflow=False),
+                dtype=np.int16,
+            )
+            scores = oww.predict(audio, debounce_time=3.0)
 
-            if porcupine.process(pcm) < 0:
+            if scores.get(model_key, 0.0) < OWW_THRESHOLD:
                 continue
 
-            logging.info("Wake word detected — listening for command...")
+            logging.info(f"Wake word detected (score={scores[model_key]:.3f}) — listening for command...")
             threading.Thread(target=_wake_feedback, daemon=True).start()
 
             # Capture RECORD_SECONDS of audio
-            n_chunks = int(porcupine.sample_rate / porcupine.frame_length * RECORD_SECONDS)
-            frames = [stream.read(porcupine.frame_length, exception_on_overflow=False)
-                      for _ in range(n_chunks)]
+            n_chunks = int(SAMPLE_RATE / CHUNK * RECORD_SECONDS)  # 50 chunks @ 4 s
+            frames = [stream.read(CHUNK, exception_on_overflow=False) for _ in range(n_chunks)]
 
             # Transcribe
-            rec = vosk.KaldiRecognizer(vosk_model, porcupine.sample_rate)
+            rec = vosk.KaldiRecognizer(vosk_model, SAMPLE_RATE)
             rec.AcceptWaveform(b"".join(frames))
             text = json.loads(rec.FinalResult()).get("text", "").strip()
             logging.info(f"Heard: '{text}'")
@@ -216,7 +208,6 @@ def main():
         stream.stop_stream()
         stream.close()
         pa.terminate()
-        porcupine.delete()
 
 
 if __name__ == "__main__":

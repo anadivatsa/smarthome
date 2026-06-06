@@ -1,0 +1,18 @@
+[Unit]
+Description=Hey Neo Wake Word Daemon
+After=network-online.target hub.service sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=anadivatsa
+WorkingDirectory=/home/anadivatsa/smarthome/wakeword
+ExecStart=/home/anadivatsa/smarthome/wakeword/venv/bin/python wake.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

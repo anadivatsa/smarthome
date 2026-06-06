@@ -1,0 +1,20 @@
+[Unit]
+Description=WiZ Smart Lamp Controller (Flask)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=anadivatsa
+WorkingDirectory=/home/anadivatsa/wiz-lamp
+ExecStart=/home/anadivatsa/wiz-lamp/venv/bin/python /home/anadivatsa/wiz-lamp/app.py
+Restart=on-failure
+RestartSec=5
+# Give the network a few extra seconds to settle on boot
+ExecStartPre=/bin/sleep 3
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

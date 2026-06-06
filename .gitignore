@@ -2,5 +2,15 @@ __pycache__/
 *.pyc
 venv/
 *.egg-info/
-.env
+
+# secrets — copy *.example and fill in
+*.env
+*.env.local
+spotify_tokens.json
+
+# runtime state
 tags.json
+presence.json
+
+# Picovoice binary model (device-specific, download from console.picovoice.ai)
+*.ppn

@@ -1,20 +1,8 @@
 {
-  "movie":     { "lamp": "movie",    "tv": { "action": "on", "volume": 15, "app": "prime"   } },
-  "netflix":   { "lamp": "movie",    "tv": { "action": "on", "volume": 15, "app": "netflix", "post_launch": {"delay": 5, "keys": ["KEY_ENTER"]} } },
-  "youtube":   { "lamp": "relax",    "tv": { "action": "on", "volume": 12, "app": "youtube" } },
-  "focus":     { "lamp": "focus",    "tv": { "action": "off"                                } },
-  "relax":     { "lamp": "relax",    "tv": { "action": "on", "volume": 10                   } },
-  "goodnight": { "lamp": "goodnight","tv": { "action": "off"                                } },
-  "morning":   { "lamp": "wake",     "tv": { "action": "on", "volume": 8,  "app": "youtube" } },
-  "party":     { "lamp": "party",    "tv": { "action": "on", "volume": 20, "app": "spotify" } },
-  "off":       { "lamp": "off",      "tv": { "action": "off"                                } },
-  "sunset":    { "lamp": "sunset",   "tv": { "action": "off"                                } },
-  "dinner":    { "lamp": "dinner",   "tv": { "action": "off"                                } },
-  "gaming":    { "lamp": "gaming",   "tv": { "action": "on", "volume": 18                   } },
-  "romance":   { "lamp": "romance",  "tv": { "action": "off"                                } },
-  "reading":   { "lamp": "reading",  "tv": { "action": "off"                                } },
-  "music":     { "lamp": "pulse",    "tv": { "action": "on", "volume_abs": 20, "app": "spotify", "volume_ramp": { "to": 60, "over": 120, "delay": 6 } } },
-  "youtube":   {
+  "movie":         { "lamp": "movie",    "tv": { "action": "on", "volume": 15, "app": "prime"   } },
+  "netflix":       { "lamp": "movie",    "tv": { "action": "on", "volume": 15, "app": "netflix", "post_launch": {"delay": 5, "keys": ["KEY_ENTER"]} } },
+  "youtube":       { "lamp": "relax",    "tv": { "action": "on", "volume": 12, "app": "youtube" } },
+  "youtube-music": {
     "lamp": "morning",
     "tv": {
       "action":      "on",
@@ -23,5 +11,23 @@
       "playlist":    "https://www.youtube.com/watch?v=DgBqq6D07Gc&list=RDDgBqq6D07Gc&start_radio=1",
       "volume_ramp": { "to": 60, "over": 120, "delay": 8 }
     }
+  },
+  "focus":         { "lamp": "focus",    "tv": { "action": "off"                                } },
+  "relax":         { "lamp": "relax",    "tv": { "action": "on", "volume": 10                   } },
+  "goodnight":     { "lamp": "goodnight","tv": { "action": "off"                                } },
+  "morning":       { "lamp": "wake",     "tv": { "action": "on", "volume": 8,  "app": "youtube" } },
+  "party":         { "lamp": "party",    "tv": { "action": "on", "volume": 20, "app": "spotify" } },
+  "off":           { "lamp": "off",      "tv": { "action": "off"                                } },
+  "sunset":        { "lamp": "sunset",   "tv": { "action": "off"                                } },
+  "dinner":        { "lamp": "dinner",   "tv": { "action": "off"                                } },
+  "gaming":        { "lamp": "gaming",   "tv": { "action": "on", "volume": 18                   } },
+  "romance":       { "lamp": "romance",  "tv": { "action": "off"                                } },
+  "reading":       { "lamp": "reading",  "tv": { "action": "off"                                } },
+  "music":         { "lamp": "pulse",    "tv": { "action": "on", "volume_abs": 20, "app": "spotify", "volume_ramp": { "to": 60, "over": 120, "delay": 6 } } },
+  "leave":         { "lamp": "off",      "tv": { "action": "off" }, "presence": "away"             },
+  "thunderstruck": {
+    "lamp": "blue",
+    "tv":  { "action": "on", "volume_abs": 40, "app": "spotify" },
+    "spotify": { "uri": "spotify:track:57bgtoPSgt236HzfBOd8kj", "volume": 40, "delay": 12 }
   }
 }

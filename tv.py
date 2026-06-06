@@ -165,7 +165,9 @@ def tv_off() -> tuple[bool, str | None]:
     status = tv_status()
     if not status.get("reachable"):
         return True, None          # already off, nothing to do
-    return tv_key("KEY_POWEROFF")
+    if status.get("power") == "standby":
+        return True, None          # already in standby, treat as off
+    return tv_key("KEY_POWER")    # toggle off (KEY_POWEROFF silently ignored on Tizen)
 
 
 # ---------------------------------------------------------------------------

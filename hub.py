@@ -11,9 +11,24 @@ TV play:    GET /tv/play  /tv/pause  /tv/stop  /tv/ff  /tv/rewind  /tv/next  /tv
 TV nav:     GET /tv/home  /tv/back  /tv/up  /tv/down  /tv/left  /tv/right  /tv/enter
 TV raw:     GET /tv/key/<KEY_CODE>
 Lamp:       GET /lamp/<path>            proxy to wiz-lamp on port 5000
-NFC tags:   GET /tag/<uid>             tap → executes scene
-            GET /tag/<uid>/<scene>     register tag to scene
-            GET /tags                  list all tags
+Spotify:    GET /spotify/status
+            GET /spotify/play           resume (or play a URI: ?uri=spotify:track:...)
+            GET /spotify/pause
+            GET /spotify/next
+            GET /spotify/prev
+            GET /spotify/volume/<0-100>
+            GET /spotify/shuffle/<on|off>
+            GET /spotify/repeat/<off|track|context>
+            GET /spotify/search/<query>
+            GET /spotify/devices
+            GET /spotify/auth           → redirects to Spotify OAuth (first-time setup)
+            GET /spotify/callback       OAuth callback (set as redirect URI in Spotify dashboard)
+NFC tags:   POST /nfc/scan             {"uid": "<NFC identifier>"}  → executes scene
+            POST /nfc/register         {"uid": "...", "scene": "..."}  → register tag
+            GET  /nfc/tags             list registered tags + available scenes
+            GET  /tag/<uid>            legacy GET trigger (browser/curl)
+            GET  /tag/<uid>/<scene>    legacy register (browser/curl)
+            GET  /tags                 legacy tag list
 """
 
 import json
@@ -23,18 +38,22 @@ import time
 from pathlib import Path
 
 import requests
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 
 import tv as TV
+import spotify as SP
+import beat_sync as BS
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
-PORT        = int(os.getenv("HUB_PORT", "5001"))
-LAMP_BASE   = os.getenv("LAMP_URL", "http://localhost:5000")
-SCENES_FILE = Path(__file__).parent / "scenes.json"
-TAGS_FILE   = Path(__file__).parent / "tags.json"
+PORT          = int(os.getenv("HUB_PORT", "5001"))
+HUB_IP        = os.getenv("HUB_IP", "localhost")
+LAMP_BASE     = os.getenv("LAMP_URL", "http://localhost:5000")
+SCENES_FILE   = Path(__file__).parent / "scenes.json"
+TAGS_FILE     = Path(__file__).parent / "tags.json"
+PRESENCE_FILE = Path(__file__).parent / "presence.json"
 
 app = Flask(__name__)
 
@@ -51,6 +70,19 @@ def _save_tag(uid: str, scene: str):
     data = json.loads(TAGS_FILE.read_text())
     data.setdefault("tags", {})[uid.upper()] = scene
     TAGS_FILE.write_text(json.dumps(data, indent=2))
+
+
+def _get_presence() -> dict:
+    if PRESENCE_FILE.exists():
+        return json.loads(PRESENCE_FILE.read_text())
+    return {"state": "unknown", "updated": None}
+
+
+def _set_presence(state: str):
+    PRESENCE_FILE.write_text(json.dumps(
+        {"state": state, "updated": time.strftime("%Y-%m-%dT%H:%M:%S")},
+        indent=2,
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -79,13 +111,22 @@ def _run_scene(name: str) -> tuple[bool, dict]:
     tv_cfg  = cfg.get("tv")
     results = {}
     errors  = []
+    _lock   = threading.Lock()
+
+    def _err(msg):
+        with _lock:
+            errors.append(msg)
+
+    def _res(key, val):
+        with _lock:
+            results[key] = val
 
     def do_lamp():
         if lamp_ep:
             ok, data = _lamp(lamp_ep)
-            results["lamp"] = data
+            _res("lamp", data)
             if not ok:
-                errors.append(f"lamp: {data.get('error')}")
+                _err(f"lamp: {data.get('error')}")
 
     def do_tv():
         if not tv_cfg:
@@ -101,32 +142,40 @@ def _run_scene(name: str) -> tuple[bool, dict]:
         if action == "off":
             TV.tv_stop_volume_ramp()
             ok, err = TV.tv_off()
-            results["tv_power"] = {"ok": ok, "error": err}
+            _res("tv_power", {"ok": ok, "error": err})
+            if not ok:
+                _err(f"tv: {err}")
             return
 
         if action == "on":
             ok, err = TV.tv_on()
-            results["tv_power"] = {"ok": ok, "error": err}
+            _res("tv_power", {"ok": ok, "error": err})
             if not ok:
+                _err(f"tv: {err}")
                 return
-            if app or volume or volume_abs:
+            if app or volume or volume_abs is not None:
                 if not TV._wait_for_ws(timeout=15):
-                    results["tv_ready"] = {"ok": False, "error": "WebSocket not ready after power-on"}
+                    _res("tv_ready", {"ok": False, "error": "WebSocket not ready after power-on"})
+                    _err("tv: WebSocket not ready after power-on")
                     return
-                results["tv_ready"] = {"ok": True}
+                _res("tv_ready", {"ok": True})
 
         # Absolute volume first (zeroes out then counts up)
         if volume_abs is not None:
             ok, err = TV.tv_set_abs_volume(volume_abs)
-            results["tv_volume"] = {"ok": ok, "target": volume_abs, "error": err}
+            _res("tv_volume", {"ok": ok, "target": volume_abs, "error": err})
+            if not ok:
+                _err(f"tv volume: {err}")
         elif volume:
             ok, err = TV.tv_set_volume(volume)
-            results["tv_volume"] = {"ok": ok, "delta": volume, "error": err}
+            _res("tv_volume", {"ok": ok, "delta": volume, "error": err})
+            if not ok:
+                _err(f"tv volume: {err}")
 
         # Launch app with optional deep link
         if app:
             ok, err = TV.tv_launch_app(app, deep_link=playlist)
-            results["tv_app"] = {"ok": ok, "app": app, "playlist": playlist, "error": err}
+            _res("tv_app", {"ok": ok, "app": app, "playlist": playlist, "error": err})
 
             # Post-launch key sequence (e.g. auto-select Netflix profile)
             if ok and post_launch:
@@ -135,7 +184,6 @@ def _run_scene(name: str) -> tuple[bool, dict]:
                     TV.tv_key(key)
                     time.sleep(0.3)
 
-            # Start background volume ramp after app is loaded
             if ok and volume_ramp:
                 start_vol = volume_abs if volume_abs is not None else (volume or 0)
                 time.sleep(volume_ramp.get("delay", 3))
@@ -145,21 +193,32 @@ def _run_scene(name: str) -> tuple[bool, dict]:
                     over_seconds= volume_ramp.get("over", 120),
                 )
 
-    t_lamp = threading.Thread(target=do_lamp)
-    t_tv   = threading.Thread(target=do_tv)
-    t_lamp.start(); t_tv.start()
-    t_lamp.join();  t_tv.join()
+    def do_spotify():
+        sp_cfg = cfg.get("spotify")
+        if not sp_cfg:
+            return
+        uri    = sp_cfg.get("uri")
+        volume = sp_cfg.get("volume")
+        delay  = sp_cfg.get("delay", 12)   # wait for Spotify app to load on TV
+        time.sleep(delay)
+        if volume is not None:
+            SP.sp_volume(volume)
+        ok, err = SP.sp_play(uri)
+        _res("spotify", {"ok": ok, "uri": uri, "error": err})
+        if not ok:
+            _err(f"spotify: {err}")
+
+    t_lamp    = threading.Thread(target=do_lamp)
+    t_tv      = threading.Thread(target=do_tv)
+    t_spotify = threading.Thread(target=do_spotify)
+    t_lamp.start(); t_tv.start(); t_spotify.start()
+    t_lamp.join();  t_tv.join();  t_spotify.join()
+
+    if presence_state := cfg.get("presence"):
+        _set_presence(presence_state)
+        _res("presence", presence_state)
 
     return len(errors) == 0, {"scene": name, "results": results, "errors": errors}
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _ok(data: dict, extra: dict | None = None) -> tuple:
-    payload = {**data, **(extra or {})}
-    return jsonify(payload), (200 if data.get("ok", data.get("error") is None) else 500)
 
 
 # ---------------------------------------------------------------------------
@@ -316,29 +375,202 @@ def route_lamp(path):
 
 
 # ---------------------------------------------------------------------------
-# NFC tag routes
+# Spotify
+# ---------------------------------------------------------------------------
+
+@app.route("/spotify/status")
+def route_sp_status():
+    return jsonify(SP.sp_status())
+
+
+@app.route("/spotify/play")
+def route_sp_play():
+    uri = request.args.get("uri")
+    ok, err = SP.sp_play(uri)
+    return jsonify({"ok": ok, "uri": uri, "error": err})
+
+
+@app.route("/spotify/pause")
+def route_sp_pause():
+    ok, err = SP.sp_pause()
+    return jsonify({"ok": ok, "error": err})
+
+
+@app.route("/spotify/next")
+def route_sp_next():
+    ok, err = SP.sp_next()
+    return jsonify({"ok": ok, "error": err})
+
+
+@app.route("/spotify/prev")
+def route_sp_prev():
+    ok, err = SP.sp_prev()
+    return jsonify({"ok": ok, "error": err})
+
+
+@app.route("/spotify/volume/<int:pct>")
+def route_sp_volume(pct):
+    ok, err = SP.sp_volume(pct)
+    return jsonify({"ok": ok, "volume": pct, "error": err})
+
+
+@app.route("/spotify/shuffle/<state>")
+def route_sp_shuffle(state):
+    if state not in ("on", "off"):
+        return jsonify({"error": "state must be on or off"}), 400
+    ok, err = SP.sp_shuffle(state == "on")
+    return jsonify({"ok": ok, "shuffle": state, "error": err})
+
+
+@app.route("/spotify/repeat/<mode>")
+def route_sp_repeat(mode):
+    ok, err = SP.sp_repeat(mode)
+    return jsonify({"ok": ok, "repeat": mode, "error": err})
+
+
+@app.route("/spotify/search/<path:query>")
+def route_sp_search(query):
+    limit = int(request.args.get("limit", 5))
+    data, err = SP.sp_search(query, limit=limit)
+    if err:
+        return jsonify({"error": err}), 502
+    return jsonify(data)
+
+
+@app.route("/spotify/beat-sync/on")
+def route_bs_on():
+    return jsonify(BS.bs_start())
+
+
+@app.route("/spotify/beat-sync/off")
+def route_bs_off():
+    return jsonify(BS.bs_stop())
+
+
+@app.route("/spotify/beat-sync/status")
+def route_bs_status():
+    return jsonify(BS.bs_status())
+
+
+@app.route("/spotify/beat-sync/bpm/<int:bpm>")
+def route_bs_bpm(bpm):
+    return jsonify(BS.bs_set_bpm(bpm))
+
+
+@app.route("/spotify/devices")
+def route_sp_devices():
+    return jsonify(SP.sp_devices())
+
+
+@app.route("/spotify/auth")
+def route_sp_auth():
+    from flask import redirect
+    url = SP.sp_auth_url()
+    if not url:
+        return jsonify({"error": "Spotify not configured — add SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET to smarthome/spotify.env"}), 503
+    return redirect(url)
+
+
+@app.route("/spotify/callback")
+def route_sp_callback():
+    error = request.args.get("error")
+    if error:
+        return jsonify({"error": f"Spotify auth denied: {error}"}), 400
+    code = request.args.get("code", "")
+    ok, err = SP.sp_exchange_code(code)
+    if not ok:
+        return jsonify({"error": err}), 500
+    return jsonify({"ok": True, "message": "Spotify authenticated — you can close this tab."})
+
+
+@app.route("/spotify/exchange")
+def route_sp_exchange():
+    """Manual code exchange for headless auth — paste code from the browser URL bar."""
+    code = request.args.get("code", "").strip()
+    if not code:
+        return jsonify({"error": "Provide ?code=<auth_code> from the redirect URL"}), 400
+    ok, err = SP.sp_exchange_code(code)
+    if not ok:
+        return jsonify({"error": err}), 500
+    return jsonify({"ok": True, "message": "Spotify authenticated successfully."})
+
+
+# ---------------------------------------------------------------------------
+# NFC helpers
+# ---------------------------------------------------------------------------
+
+def _normalize_uid(uid: str) -> str:
+    return uid.upper().replace(":", "").replace("-", "").strip()
+
+
+def _trigger_tag(uid: str) -> tuple[int, dict]:
+    """Look up uid in tags.json and run the mapped scene. Always returns 200."""
+    uid   = _normalize_uid(uid)
+    scene = _load_tags().get(uid)
+    if not scene:
+        return 200, {
+            "triggered":  False,
+            "registered": False,
+            "uid":        uid,
+            "scenes":     list(_load_scenes().keys()),
+        }
+    ok, data = _run_scene(scene)
+    data.update({"triggered": True, "uid": uid, "scene": scene})
+    return (200 if ok else 207), data
+
+
+# ---------------------------------------------------------------------------
+# NFC routes — iPhone Shortcuts
+# ---------------------------------------------------------------------------
+
+@app.route("/nfc/scan", methods=["POST"])
+def route_nfc_scan():
+    """iOS Shortcuts calls POST /nfc/scan with {"uid": "<NFC Tag Identifier>"}."""
+    body = request.get_json(silent=True) or {}
+    uid  = body.get("uid", "").strip()
+    if not uid:
+        return jsonify({"error": "uid is required"}), 400
+    status, data = _trigger_tag(uid)
+    return jsonify(data), status
+
+
+@app.route("/nfc/register", methods=["POST"])
+def route_nfc_register():
+    """Register a tag — POST {"uid": "...", "scene": "movie"}."""
+    body  = request.get_json(silent=True) or {}
+    uid   = body.get("uid", "").strip()
+    scene = body.get("scene", "").strip()
+    if not uid or not scene:
+        return jsonify({"error": "uid and scene are required"}), 400
+    uid    = _normalize_uid(uid)
+    scenes = _load_scenes()
+    if scene not in scenes:
+        return jsonify({"error": f"Unknown scene '{scene}'", "available": list(scenes)}), 400
+    _save_tag(uid, scene)
+    return jsonify({"registered": True, "uid": uid, "scene": scene})
+
+
+@app.route("/nfc/tags")
+def route_nfc_tags():
+    return jsonify({"tags": _load_tags(), "scenes": list(_load_scenes().keys())})
+
+
+# ---------------------------------------------------------------------------
+# NFC tag routes — legacy (GET, browser/curl friendly)
 # ---------------------------------------------------------------------------
 
 @app.route("/tag/<uid>")
 def route_tag(uid):
-    uid   = uid.upper().replace(":", "")
-    tags  = _load_tags()
-    scene = tags.get(uid)
-    if scene:
-        ok, data = _run_scene(scene)
-        data["uid"] = uid
-        return jsonify(data), (200 if ok else 207)
-    return jsonify({
-        "registered": False,
-        "uid":   uid,
-        "hint":  f"Register with GET /tag/{uid}/<scene>",
-        "scenes": list(_load_scenes().keys()),
-    }), 404
+    status, data = _trigger_tag(uid)
+    if not data.get("registered", True) and not data.get("triggered"):
+        data["hint"] = f"Register with POST /nfc/register or GET /tag/{_normalize_uid(uid)}/<scene>"
+        return jsonify(data), 404
+    return jsonify(data), status
 
 
 @app.route("/tag/<uid>/<scene>", methods=["GET", "POST"])
 def route_tag_register(uid, scene):
-    uid    = uid.upper().replace(":", "")
+    uid    = _normalize_uid(uid)
     scenes = _load_scenes()
     if scene not in scenes:
         return jsonify({"error": f"Unknown scene '{scene}'", "available": list(scenes)}), 400
@@ -349,6 +581,62 @@ def route_tag_register(uid, scene):
 @app.route("/tags")
 def route_tags():
     return jsonify({"tags": _load_tags(), "scenes": list(_load_scenes().keys())})
+
+
+# ---------------------------------------------------------------------------
+# Presence
+# ---------------------------------------------------------------------------
+
+@app.route("/presence", methods=["GET", "POST"])
+def route_presence():
+    if request.method == "POST":
+        body  = request.get_json(silent=True) or {}
+        state = body.get("state", "").strip()
+        if state not in ("home", "away"):
+            return jsonify({"error": "state must be 'home' or 'away'"}), 400
+        _set_presence(state)
+    return jsonify(_get_presence())
+
+
+# ---------------------------------------------------------------------------
+# Siri Shortcuts reference page
+# ---------------------------------------------------------------------------
+
+@app.route("/shortcuts")
+def route_shortcuts():
+    base = f"http://{HUB_IP}:{PORT}"
+    return jsonify({
+        "instructions": "In the Shortcuts app: New Shortcut → Add Action → 'Get Contents of URL' → paste URL → Add to Siri → record phrase",
+        "scenes": {phrase: f"{base}/scene/{scene}" for phrase, scene in {
+            "Movie time":    "movie",
+            "Party time":    "party",
+            "Play music":    "music",
+            "Good night":    "goodnight",
+            "Focus mode":    "focus",
+            "Morning":       "morning",
+            "Dinner time":   "dinner",
+            "Gaming mode":   "gaming",
+            "Romance mode":  "romance",
+            "Turn off":      "off",
+        }.items()},
+        "spotify": {
+            "Pause music":   f"{base}/spotify/pause",
+            "Resume music":  f"{base}/spotify/play",
+            "Next song":     f"{base}/spotify/next",
+            "Previous song": f"{base}/spotify/prev",
+        },
+        "lamp": {
+            "Lights on":     f"{base}/lamp/on",
+            "Lights off":    f"{base}/lamp/off",
+            "Disco mode":    f"{base}/lamp/disco",
+            "Relax light":   f"{base}/lamp/relax",
+            "Bright light":  f"{base}/lamp/focus",
+        },
+        "tv": {
+            "TV on":         f"{base}/tv/on",
+            "TV off":        f"{base}/tv/off",
+        },
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +663,11 @@ def route_index():
             "tv_nav":    "/tv/home  /tv/back  /tv/up  /tv/down  /tv/left  /tv/right  /tv/enter",
             "tv_raw":    "/tv/key/<KEY_CODE>",
             "lamp":      "/lamp/<endpoint>",
-            "nfc":       "/tag/<uid>  /tag/<uid>/<scene>  /tags",
+            "nfc":       "POST /nfc/scan  POST /nfc/register  GET /nfc/tags",
+            "nfc_legacy": "GET /tag/<uid>  GET /tag/<uid>/<scene>  GET /tags",
+            "presence":  "GET /presence  POST /presence  {state: home|away}",
+            "spotify":   "/spotify/status  /spotify/play  /spotify/pause  /spotify/next  /spotify/prev  /spotify/volume/<n>  /spotify/shuffle/<on|off>  /spotify/repeat/<off|track|context>  /spotify/search/<q>  /spotify/devices  /spotify/auth",
+            "shortcuts": f"http://{HUB_IP}:{PORT}/shortcuts",
         },
     })
 

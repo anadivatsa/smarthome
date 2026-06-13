@@ -22,3 +22,6 @@ SIRI_SHORTCUTS.md
 
 # Runtime data — never commit DB or backups
 data/
+
+# Piper TTS binary + voice models (large, device-local)
+piper/

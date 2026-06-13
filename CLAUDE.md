@@ -28,7 +28,6 @@ A Raspberry Pi (hostname **Neo**, IP **192.168.1.8**) runs a multi-service smart
 |---|---|---|---|
 | `hub.service` | `smarthome/hub.py` | 5001 | **active** |
 | `wiz-lamp.service` | `smarthome/wiz-lamp/app.py` | 5000 | **active** |
-| `bayern-notifier.service` | `smarthome/bavaria_notifier.py` | — | **active** |
 | `voice.service` | `smarthome/voice.py` | — | **active** |
 | `tgvoice.service` | `smarthome/tgvoice.py` | — | **active** |
 
@@ -55,7 +54,6 @@ A Raspberry Pi (hostname **Neo**, IP **192.168.1.8**) runs a multi-service smart
 │  │   effects / transitions / static     │  │
 │  └──────────────────────────────────────┘  │
 │                                            │
-│  bavaria_notifier.py  (background, no port)│  ← polls openligadb.de → Telegram
 └───────────────┬────────────────────────────┘
                 │
      ┌──────────┴──────────┐
@@ -88,7 +86,6 @@ smarthome/
 ├── tgvoice.service       systemd unit for tgvoice.py
 ├── hub.service           systemd unit for hub.py
 ├── install.sh            Installs hub.service + venv
-├── bavaria_notifier.py   Bayern Munich goal/match Telegram notifier
 ├── bt_pair.py            Headless Bluetooth pairing helper (manual, not integrated)
 ├── requirements.txt      Hub Python deps
 ├── venv/                 Python virtual environment (shared by all services)
@@ -307,7 +304,7 @@ Telegram bot running as `tgvoice.service`. Accepts messages from the allowlisted
 - **`/status` command** → live service health + device states (lamp, TV, Spotify, presence)
 
 **`/status` output:**
-- Per-service active/inactive for: hub, wiz-lamp, voice, tgvoice, bayern-notifier
+- Per-service active/inactive for: hub, wiz-lamp, voice, tgvoice
 - Lamp: on/off · colour temp · brightness · active effect (if any)
 - TV: power state
 - Spotify: now-playing track + artist, or "not playing"
@@ -322,17 +319,6 @@ Telegram bot running as `tgvoice.service`. Accepts messages from the allowlisted
 Uses the same system prompt as `voice.py` (auto-built at startup from `scenes.json` + all hub routes). Claude returns strict JSON actions; no hardcoded phrase mapping.
 
 Config: reads `voice.env` (ANTHROPIC_API_KEY, WHISPER_MODEL, CLAUDE_MODEL) and `notifier.env` (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID).
-
----
-
-## Bayern Notifier (`bavaria_notifier.py`)
-
-Polls `openligadb.de` for Bayern Munich Bundesliga matches. Sends Telegram alerts for:
-- Kick-off, half time, full time
-- Each goal (scorer, minute, score, own goal / penalty flags)
-
-Polls every 60s during a live match, 10 min otherwise. State in `~/.bayern_state.json`.  
-Config in `notifier.env`: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
 
 ---
 
@@ -356,7 +342,6 @@ Config in `notifier.env`: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
 ### Stage 1 — Core Hub ✅ Done
 - Hub + lamp service on systemd, always running
 - All scenes, TV control, Spotify, NFC tags, beat sync
-- Bayern notifier
 
 ### Stage 2 — Voice Intelligence ✅ Done
 - `voice.py`: WebRTC VAD → Whisper → Claude API → hub

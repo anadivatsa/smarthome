@@ -38,8 +38,6 @@ Services running on boot:
 | `wiz-lamp.service` | `wiz-lamp/app.py` | 5000 | WiZ bulb controller — effects, transitions, static scenes |
 | `tgvoice.service` | `tgvoice.py` | — | Telegram bot with Whisper transcription and conversation memory |
 | `voice.service` | `voice.py` | — | Local mic VAD → Whisper → Claude intent pipeline |
-| `bayern-notifier.service` | `bavaria_notifier.py` | — | Bayern Munich goal/match Telegram notifications |
-
 The hub proxies all `/lamp/*` requests to the lamp service, so external clients only need port 5001.
 
 ---
@@ -232,7 +230,7 @@ A task that fails 3 consecutive times is automatically disabled (`ENABLED` set t
 
 | Task | Schedule | Description |
 |---|---|---|
-| `tasks/morning_brief.py` | Daily 07:30 | Telegram message with date, Bayern fixture, uptime, last 3 scenes, weather |
+| `tasks/morning_brief.py` | Daily 07:30 | Telegram message with date, uptime, last 3 scenes, weather |
 | `tasks/disk_check.py` | Daily 09:00 | Alert if root partition exceeds 85% |
 | `tasks/memory_cleanup.py` | Sunday 03:00 | Delete conversation rows older than 30 days |
 
@@ -374,7 +372,6 @@ smarthome/
 ├── backup.py            Timestamped file backup utility
 ├── tgvoice.py           Telegram bot (Whisper + Claude + memory)
 ├── voice.py             Local mic VAD → Whisper → Claude pipeline
-├── bavaria_notifier.py  Bayern Munich goal/match Telegram notifier
 ├── scenes.json          Scene definitions (edit to add/change scenes)
 ├── tags.json            NFC tag → scene mappings (auto-updated)
 ├── .env.example         Template for all environment variables
@@ -583,7 +580,7 @@ The scheduler runs as a daemon background thread inside `hub.py`. Failed tasks a
 
 | File | Schedule | Status | Description |
 |---|---|---|---|
-| `tasks/morning_brief.py` | Daily 08:00 | **enabled** | Telegram briefing: date, Bayern fixture, uptime, last scenes, weather |
+| `tasks/morning_brief.py` | Daily 08:00 | **enabled** | Telegram briefing: date, uptime, last scenes, weather |
 | `tasks/disk_check.py` | Daily 09:00 | **enabled** | Alert via Telegram if root partition > 85% |
 | `tasks/memory_cleanup.py` | Sunday 03:00 | disabled | Delete conversation rows older than 30 days |
 

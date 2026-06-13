@@ -2,7 +2,7 @@
 # SCHEDULE: daily at 08:00
 # ENABLED: true
 # DESCRIPTION: Send morning briefing to Telegram
-"""Morning briefing: date, Bayern fixture, uptime, last 3 scenes, weather."""
+"""Morning briefing: date, uptime, last 3 scenes, weather."""
 
 import os
 import subprocess
@@ -46,20 +46,6 @@ def weather() -> str:
         return "weather unavailable"
 
 
-def bayern_today() -> str:
-    try:
-        from bavaria_notifier import get_matches, find_bayern_match
-        match = find_bayern_match(get_matches())
-        if not match:
-            return "No Bayern fixture today"
-        t1 = match["team1"]["teamName"]
-        t2 = match["team2"]["teamName"]
-        dt = match.get("matchDateTimeUTC", "")[:16].replace("T", " ")
-        return f"⚽ {t1} vs {t2} at {dt} UTC"
-    except Exception as exc:
-        return f"Bayern check failed: {exc}"
-
-
 def scene_history() -> str:
     try:
         import memory
@@ -78,7 +64,6 @@ lines = [
     "",
     f"🕰 Uptime: {uptime()}",
     f"🌤 {weather()}",
-    f"🏟 {bayern_today()}",
     "",
     "<b>Last scenes:</b>",
     scene_history(),

@@ -1,3 +1,4 @@
+# RETIRED — one-time project, no longer in use
 import os
 import requests
 import time

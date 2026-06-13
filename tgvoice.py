@@ -296,7 +296,7 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lines = ["*Neo Status*"]
 
-    services = ["hub", "wiz-lamp", "voice", "tgvoice", "bayern-notifier"]
+    services = ["hub", "wiz-lamp", "voice", "tgvoice"]
     for svc in services:
         r = subprocess.run(
             ["systemctl", "is-active", f"{svc}.service"],

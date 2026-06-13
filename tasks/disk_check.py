@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SCHEDULE: daily at 09:00
-# ENABLED: false
+# ENABLED: true
 # DESCRIPTION: Warn if Pi disk usage exceeds 85%
 """Alert via Telegram if root partition exceeds 85% usage."""
 

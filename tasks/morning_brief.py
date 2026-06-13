@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# SCHEDULE: daily at 07:30
-# ENABLED: false
+# SCHEDULE: daily at 08:00
+# ENABLED: true
 # DESCRIPTION: Send morning briefing to Telegram
 """Morning briefing: date, Bayern fixture, uptime, last 3 scenes, weather."""
 

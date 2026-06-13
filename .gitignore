@@ -15,3 +15,6 @@ presence.json
 # Wake word binary models (device-trained, not committed)
 *.ppn
 *.onnx
+
+# Contains live API key — never commit
+KEY_URLS.txt

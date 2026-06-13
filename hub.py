@@ -863,6 +863,32 @@ def route_api_scene_log():
         return jsonify({"error": str(exc)}), 500
 
 
+@app.route("/api/diary")
+@limiter.limit("30/minute")
+def route_api_diary():
+    if not _MEM_OK:
+        return jsonify({"error": "memory module not available"}), 503
+    n = min(int(request.args.get("n", 7)), 30)
+    try:
+        c = MEM._conn()
+        rows = c.execute(
+            "SELECT source, content, timestamp FROM memories "
+            "WHERE role = 'diary' ORDER BY timestamp DESC LIMIT ?", (n,)
+        ).fetchall()
+        entries = []
+        for row in rows:
+            src  = row["source"] or ""
+            date = src.replace("neo_diary_", "") if src.startswith("neo_diary_") else row["timestamp"][:10]
+            entries.append({
+                "date":      date,
+                "content":   row["content"],
+                "timestamp": row["timestamp"],
+            })
+        return jsonify({"entries": entries})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
 # ---------------------------------------------------------------------------
 # Health / index
 # ---------------------------------------------------------------------------

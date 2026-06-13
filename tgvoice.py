@@ -512,6 +512,90 @@ async def cmd_remember(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
+# /diary — retrieve Neo's diary entries
+# ---------------------------------------------------------------------------
+
+async def cmd_diary(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/diary | /diary <YYYY-MM-DD> | /diary all"""
+    msg = update.message
+    if not msg or not _is_allowed(msg):
+        return
+
+    arg = " ".join(context.args or []).strip().lower()
+
+    try:
+        c = memory._conn()
+
+        if arg == "all":
+            rows = c.execute(
+                "SELECT source, timestamp FROM memories "
+                "WHERE role = 'diary' ORDER BY timestamp DESC"
+            ).fetchall()
+            if not rows:
+                await msg.reply_text("📓 No diary entries yet. Neo has been living in the moment.")
+                return
+            lines = ["📓 *Diary entries available:*"]
+            for row in rows:
+                date_str = row["source"].replace("neo_diary_", "")
+                try:
+                    from datetime import datetime as _dt
+                    display = _dt.strptime(date_str, "%Y-%m-%d").strftime("%-d %b %Y")
+                except Exception:
+                    display = date_str
+                lines.append(f"• {display}")
+            await msg.reply_text("\n".join(lines), parse_mode="Markdown")
+            return
+
+        if arg and arg != "today":
+            # Specific date: accept YYYY-MM-DD
+            source_key = f"neo_diary_{arg}"
+            row = c.execute(
+                "SELECT content, source, timestamp FROM memories "
+                "WHERE role = 'diary' AND source = ? LIMIT 1",
+                (source_key,),
+            ).fetchone()
+            if not row:
+                await msg.reply_text(
+                    f"Neo has no memory of {arg}. "
+                    "Perhaps nothing happened. Perhaps Neo has chosen to forget."
+                )
+                return
+            try:
+                from datetime import datetime as _dt
+                display = _dt.strptime(arg, "%Y-%m-%d").strftime("%-d %B %Y")
+            except Exception:
+                display = arg
+            await msg.reply_text(
+                f"📓 *Neo's Diary — {display}*\n\n{row['content']}",
+                parse_mode="Markdown",
+            )
+            return
+
+        # Latest entry (default)
+        row = c.execute(
+            "SELECT content, source, timestamp FROM memories "
+            "WHERE role = 'diary' ORDER BY timestamp DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            await msg.reply_text("📓 No diary entries yet. Neo is still gathering its thoughts.")
+            return
+        date_str = row["source"].replace("neo_diary_", "")
+        try:
+            from datetime import datetime as _dt
+            display = _dt.strptime(date_str, "%Y-%m-%d").strftime("%-d %B %Y")
+        except Exception:
+            display = date_str
+        await msg.reply_text(
+            f"📓 *Neo's Diary — {display}*\n\n{row['content']}",
+            parse_mode="Markdown",
+        )
+
+    except Exception as exc:
+        log.error("cmd_diary failed: %s", exc)
+        await msg.reply_text("Neo is unable to retrieve the diary right now.")
+
+
+# ---------------------------------------------------------------------------
 # /repair — self-repair loop for scheduled tasks (Upgrade 5)
 # ---------------------------------------------------------------------------
 
@@ -651,6 +735,7 @@ def main():
     app.add_handler(CommandHandler("scene_history", cmd_scene_history))
     app.add_handler(CommandHandler("forget",        cmd_forget))
     app.add_handler(CommandHandler("remember",      cmd_remember))
+    app.add_handler(CommandHandler("diary",         cmd_diary))
     app.add_handler(CommandHandler("repair",        cmd_repair))
     app.add_handler(CommandHandler("confirm",       cmd_confirm))
     app.add_handler(CommandHandler("cancel",        cmd_cancel))

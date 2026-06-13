@@ -55,6 +55,12 @@ import tv as TV
 import spotify as SP
 import beat_sync as BS
 try:
+    import tts as TTS
+    _TTS_OK = True
+except Exception:
+    TTS = None
+    _TTS_OK = False
+try:
     import memory as MEM
     import scheduler as SCHED
     _MEM_OK   = True
@@ -306,7 +312,13 @@ def _run_scene(name: str) -> tuple[bool, dict]:
         _set_presence(presence_state)
         _res("presence", presence_state)
 
-    return len(errors) == 0, {"scene": name, "results": results, "errors": errors}
+    ok = len(errors) == 0
+    if ok and _TTS_OK:
+        try:
+            TTS.set_current_scene(name)
+        except Exception:
+            pass
+    return ok, {"scene": name, "results": results, "errors": errors}
 
 
 # ---------------------------------------------------------------------------
@@ -813,6 +825,15 @@ def route_api_info():
 
     ts_ip    = utils.get_tailscale_ip()
     local_ip = utils.get_local_ip()
+    audio_block: dict = {"tts_enabled": os.getenv("TTS_ENABLED", "false")}
+    if _TTS_OK:
+        try:
+            audio_block["jbl_connected"] = TTS.is_jbl_connected()
+            audio_block["jbl_mac"]       = TTS.JBL_MAC
+            audio_block["active_sink"]   = TTS.get_active_sink()
+            audio_block["tts_enabled"]   = TTS._is_tts_enabled()
+        except Exception:
+            pass
     return jsonify({
         "hostname":           utils.HOSTNAME,
         "local_ip":           local_ip,
@@ -827,6 +848,71 @@ def route_api_info():
             "voice":    _svc("voice"),
             "wiz_lamp": _port_listening(5000),
         },
+        "audio": audio_block,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Announce endpoint (Task 5)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/announce", methods=["POST"])
+@limiter.limit("10/minute")
+def route_api_announce():
+    if not _TTS_OK:
+        return jsonify({"error": "tts module not available"}), 503
+    body = request.get_json(silent=True) or {}
+    text = body.get("text", "").strip()
+    if not text:
+        return jsonify({"error": "text is required"}), 400
+    if len(text) > 500:
+        return jsonify({"error": "text must be < 500 chars"}), 400
+    device = body.get("device", "jbl")
+    TTS.speak_async(text, device)
+    if _MEM_OK:
+        try:
+            MEM.store_memory(f"Announcement: {text}", role="announcement", source="api")
+        except Exception:
+            pass
+    return jsonify({
+        "status":        "speaking",
+        "text":          text,
+        "jbl_connected": TTS.is_jbl_connected(),
+    })
+
+
+# ---------------------------------------------------------------------------
+# TTS toggle / status endpoints
+# ---------------------------------------------------------------------------
+
+@app.route("/tts/on")
+@limiter.limit("20/minute")
+def route_tts_on():
+    if not _TTS_OK:
+        return jsonify({"error": "tts module not available"}), 503
+    TTS.set_hub_env("TTS_ENABLED", "true")
+    return jsonify({"tts_enabled": True, "jbl_connected": TTS.is_jbl_connected()})
+
+
+@app.route("/tts/off")
+@limiter.limit("20/minute")
+def route_tts_off():
+    if not _TTS_OK:
+        return jsonify({"error": "tts module not available"}), 503
+    TTS.set_hub_env("TTS_ENABLED", "false")
+    return jsonify({"tts_enabled": False, "jbl_connected": TTS.is_jbl_connected()})
+
+
+@app.route("/tts/status")
+@limiter.limit("30/minute")
+def route_tts_status():
+    if not _TTS_OK:
+        return jsonify({"error": "tts module not available"}), 503
+    return jsonify({
+        "tts_enabled":  TTS._is_tts_enabled(),
+        "jbl_connected": TTS.is_jbl_connected(),
+        "jbl_mac":      TTS.JBL_MAC,
+        "active_sink":  TTS.get_active_sink(),
     })
 
 
@@ -922,6 +1008,8 @@ def route_api():
             "nfc_legacy": "GET /tag/<uid>  GET /tag/<uid>/<scene>  GET /tags",
             "presence":  "GET /presence  POST /presence  {state: home|away}",
             "spotify":   "/spotify/status  /spotify/play  /spotify/pause  /spotify/next  /spotify/prev  /spotify/volume/<n>  /spotify/shuffle/<on|off>  /spotify/repeat/<off|track|context>  /spotify/search/<q>  /spotify/devices  /spotify/auth",
+            "tts":       "/tts/on  /tts/off  /tts/status",
+            "announce":  "POST /api/announce  {text, device?}",
             "shortcuts": f"http://{HUB_IP}:{PORT}/shortcuts",
         },
     })

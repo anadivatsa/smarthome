@@ -13,6 +13,7 @@ No hardcoded commands — Claude handles all intent recognition.
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -202,6 +203,10 @@ def resolve_intent(transcript: str) -> list:
             messages=[{"role": "user", "content": transcript}],
         )
         raw = msg.content[0].text.strip()
+        # Strip markdown code fences if model wraps response despite instructions
+        if raw.startswith("```"):
+            raw = re.sub(r"^```[a-z]*\n?", "", raw)
+            raw = re.sub(r"\n?```$", "", raw).strip()
         parsed = json.loads(raw)
         if isinstance(parsed, dict):
             return [parsed]

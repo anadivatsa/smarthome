@@ -34,6 +34,8 @@ NFC tags:   POST /nfc/scan             {"uid": "<NFC identifier>"}  → executes
 import json
 import logging
 import os
+import re
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -917,6 +919,146 @@ def route_tts_status():
 
 
 # ---------------------------------------------------------------------------
+# Voice API — POST /api/voice  (Whisper → Claude intent → dispatch)
+# ---------------------------------------------------------------------------
+
+_vapi_log     = logging.getLogger("hub")
+_vapi_whisper = None
+_vapi_lock    = threading.Semaphore(1)
+_vapi_claude  = None
+
+_VAPI_PROMPT = """\
+You are the voice controller for a smart home hub (Raspberry Pi).
+Parse the voice transcript and return JSON action(s) to execute.
+
+## Scenes  (GET /scene/<name>)
+{scenes}
+
+## Lamp  GET /lamp/<endpoint>
+Static:      on off focus movie sleep relax reading romance dinner morning gaming blue brightness/<0-100>
+Effects:     blink pulse party alert strobe candle campfire aurora disco
+Transitions: sunset sunrise wake bedtime fade goodnight
+
+## TV  GET /tv/<endpoint>
+Power: on off  Audio: mute volume/<n>  Apps: app/netflix app/youtube app/prime app/spotify
+Playback: play pause stop ff rewind next prev  Nav: home back up down left right enter
+
+## Spotify  GET /spotify/<endpoint>
+play pause next prev volume/<0-100> shuffle/on shuffle/off search/<q>
+
+## Response — strict JSON only, no markdown, no prose
+Single: {{"action": "/scene/movie", "reason": "user wants to watch a movie"}}
+Multi:  [{{"action": "/spotify/pause", "reason": "..."}}, {{"action": "/scene/focus", "reason": "..."}}]
+No-op:  {{"action": null, "reason": "unclear or not a home-control request"}}\
+"""
+
+
+def _vapi_build_prompt() -> str:
+    scenes = json.loads(SCENES_FILE.read_text())
+    def _summary(n, c):
+        tv = c.get("tv", {})
+        parts = [f"lamp={c.get('lamp','—')}", f"tv={tv.get('action','—')}"]
+        if tv.get("app"):      parts.append(f"app={tv['app']}")
+        if c.get("spotify"):   parts.append("spotify=play")
+        if c.get("presence"):  parts.append(f"presence={c['presence']}")
+        return ", ".join(parts)
+    scene_lines = "\n".join(f"  /scene/{n}  ({_summary(n,c)})" for n, c in scenes.items())
+    return _VAPI_PROMPT.format(scenes=scene_lines)
+
+
+def _vapi_get_whisper():
+    global _vapi_whisper
+    if _vapi_whisper is None:
+        _vapi_log.info("Voice API: loading Whisper…")
+        import whisper as _w
+        _vapi_whisper = _w.load_model(os.getenv("WHISPER_MODEL", "base"))
+        _vapi_log.info("Voice API: Whisper ready")
+    return _vapi_whisper
+
+
+def _vapi_get_claude():
+    global _vapi_claude
+    if _vapi_claude is None:
+        import anthropic as _a
+        key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+        if not key:
+            try:
+                for line in (Path(__file__).parent / "voice.env").read_text().splitlines():
+                    if line.startswith("ANTHROPIC_API_KEY="):
+                        key = line.split("=", 1)[1].strip()
+                        break
+            except Exception:
+                pass
+        _vapi_claude = _a.Anthropic(api_key=key)
+    return _vapi_claude
+
+
+@app.route("/api/voice", methods=["POST"])
+@limiter.limit("30/minute")
+def route_api_voice():
+    """Accept WAV audio, transcribe with Whisper, dispatch via Claude intent."""
+    if "audio" not in request.files:
+        return jsonify({"error": "multipart field 'audio' required"}), 400
+
+    audio_file = request.files["audio"]
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    try:
+        audio_file.save(tmp.name)
+        tmp.close()
+
+        with _vapi_lock:
+            result = _vapi_get_whisper().transcribe(tmp.name, language="en", fp16=False)
+        transcript = result["text"].strip()
+
+        if not transcript:
+            return jsonify({"transcript": "", "actions": [], "reason": "empty transcript"})
+
+        _vapi_log.info("Voice API: heard %r", transcript)
+
+        raw = ""
+        try:
+            msg = _vapi_get_claude().messages.create(
+                model=os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001"),
+                max_tokens=256,
+                system=_vapi_build_prompt(),
+                messages=[{"role": "user", "content": transcript}],
+            )
+            raw = msg.content[0].text.strip()
+            if raw.startswith("```"):
+                raw = re.sub(r"^```[a-z]*\n?", "", raw)
+                raw = re.sub(r"\n?```$", "", raw).strip()
+            parsed = json.loads(raw)
+            actions = [parsed] if isinstance(parsed, dict) else [a for a in parsed if isinstance(a, dict)]
+        except Exception as exc:
+            _vapi_log.warning("Voice API: Claude error: %s  raw=%r", exc, raw[:80])
+            return jsonify({"transcript": transcript, "actions": [], "reason": str(exc)})
+
+        headers = {"X-Neo-Key": os.getenv("NEO_API_KEY", "")}
+        dispatched = []
+        for item in actions:
+            action = item.get("action")
+            reason = item.get("reason", "")
+            if not action:
+                dispatched.append({"action": None, "reason": reason})
+                continue
+            url = f"http://localhost:{PORT}{action}"
+            _vapi_log.info("Voice API → %-30s  %s", action, reason)
+            try:
+                r = requests.get(url, headers=headers, timeout=20)
+                dispatched.append({"action": action, "reason": reason, "status": r.status_code})
+            except Exception as exc:
+                dispatched.append({"action": action, "reason": reason, "error": str(exc)})
+
+        return jsonify({"transcript": transcript, "actions": dispatched})
+
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Memory API endpoints
 # ---------------------------------------------------------------------------
 
@@ -1010,6 +1152,7 @@ def route_api():
             "spotify":   "/spotify/status  /spotify/play  /spotify/pause  /spotify/next  /spotify/prev  /spotify/volume/<n>  /spotify/shuffle/<on|off>  /spotify/repeat/<off|track|context>  /spotify/search/<q>  /spotify/devices  /spotify/auth",
             "tts":       "/tts/on  /tts/off  /tts/status",
             "announce":  "POST /api/announce  {text, device?}",
+            "voice":     "POST /api/voice  (multipart: audio=<wav>)  → Whisper→Claude→dispatch",
             "shortcuts": f"http://{HUB_IP}:{PORT}/shortcuts",
         },
     })

@@ -63,12 +63,12 @@ def record_chunk(path: str) -> bool:
          "-l", str(CHUNK_SEC), "-r", str(SAMPLE_RATE), "-c", "1"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
-    time.sleep(CHUNK_SEC + 0.5)
-    # Stop in case it's still recording (no-op if already done)
+    time.sleep(CHUNK_SEC + 1)
     subprocess.run(
         ["termux-microphone-record", "-q"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
+    time.sleep(1)
     return os.path.exists(path) and os.path.getsize(path) > 0
 
 

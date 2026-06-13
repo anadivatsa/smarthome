@@ -1,39 +1,46 @@
 # Smart Home Hub
 
-A Raspberry Pi–hosted HTTP API that ties together a Samsung TV and a WiZ smart lamp into a single, scriptable control surface. Scenes, NFC tags, volume ramps, lighting transitions, and deep-linked app launches — all triggered by a plain HTTP GET.
+A Raspberry Pi–hosted HTTP API that ties together a Samsung TV and a WiZ smart lamp into a single, scriptable control surface. Scenes, NFC tags, volume ramps, lighting transitions, and deep-linked app launches — controlled via HTTP, Telegram text/voice, or NFC tap. Includes persistent vector memory, a Telegram bot with conversation history, and a lightweight scheduled task system.
 
 ---
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────┐
-│               Raspberry Pi                        │
-│                                                   │
-│  ┌─────────────────────┐  ┌────────────────────┐  │
-│  │   Smart Home Hub    │  │  WiZ Lamp Service  │  │
-│  │   hub.py  :5001     │──│  app.py   :5000    │  │
-│  └──────────┬──────────┘  └────────────────────┘  │
-│             │  proxy /lamp/*                       │
-└─────────────┼────────────────────────────────────┘
-              │
-    ┌─────────┴──────────┐
-    │                    │
-    ▼                    ▼
-Samsung TV          WiZ Bulb
-<TV_IP>              <LAMP_IP>
-WebSocket :8002     UDP (pywizlight)
-REST API  :8001
+┌─────────────────────────────────────────────────────────────┐
+│                     Raspberry Pi (Neo)                       │
+│                                                              │
+│  tgvoice.py ── Telegram bot ── Whisper + Claude + memory    │
+│  voice.py   ── local mic VAD ─ Whisper + Claude             │
+│                      │                                       │
+│  ┌───────────────────▼──────────┐  ┌──────────────────────┐ │
+│  │   hub.py  :5001              │  │  wiz-lamp/app.py     │ │
+│  │   scenes / TV / Spotify /    │──│  :5000               │ │
+│  │   NFC / presence / memory    │  │  effects/transitions │ │
+│  └───────────────────┬──────────┘  └──────────────────────┘ │
+│                      │ proxy /lamp/*                         │
+│  memory.py ── SQLite + fastembed (vector search)             │
+│  scheduler.py ── APScheduler background thread               │
+└──────────────────────┼──────────────────────────────────────┘
+                       │
+             ┌─────────┴──────────┐
+             ▼                    ▼
+       Samsung TV             WiZ Bulb
+       WebSocket :8002        UDP (pywizlight)
+       REST API  :8001
 ```
 
-Two systemd services run on boot:
+Services running on boot:
 
 | Service | File | Port | Purpose |
 |---|---|---|---|
-| `hub.service` | `hub.py` | 5001 | Central orchestrator — scenes, TV, NFC, lamp proxy |
-| `wiz-lamp.service` | `app.py` | 5000 | WiZ bulb controller — effects, transitions, static scenes |
+| `hub.service` | `hub.py` | 5001 | Central orchestrator — scenes, TV, NFC, memory API, lamp proxy |
+| `wiz-lamp.service` | `wiz-lamp/app.py` | 5000 | WiZ bulb controller — effects, transitions, static scenes |
+| `tgvoice.service` | `tgvoice.py` | — | Telegram bot with Whisper transcription and conversation memory |
+| `voice.service` | `voice.py` | — | Local mic VAD → Whisper → Claude intent pipeline |
+| `bayern-notifier.service` | `bavaria_notifier.py` | — | Bayern Munich goal/match Telegram notifications |
 
-The hub proxies all `/lamp/*` requests to the lamp service, so external clients only need to know about port 5001.
+The hub proxies all `/lamp/*` requests to the lamp service, so external clients only need port 5001.
 
 ---
 
@@ -130,9 +137,116 @@ Tag mappings are stored in `tags.json`. UIDs are normalised (uppercase, colons s
 
 `GET /lamp/<endpoint>` — transparently proxies to the lamp service on port 5000. Lets clients use a single base URL for everything.
 
+#### Memory API endpoints
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/memory?q=<query>&n=5` | Semantic search over long-term memory |
+| `GET /api/scene_log?n=20` | Scene activation history with trigger source |
+
+Both endpoints require the `NEO_API_KEY`. Results are JSON and power future dashboard UI.
+
 ---
 
-### WiZ Lamp Service (`app.py`)
+### Telegram Bot (`tgvoice.py`)
+
+Telegram bot running as `tgvoice.service`. Accepts text and voice messages from the allowlisted chat ID. Voice messages are transcribed with Whisper (local, offline). All commands go through Claude for intent recognition and then dispatch to the hub.
+
+**Conversation memory:** every message is stored in `memory.db`. The last 15 turns are sent as context to Claude on each request, so Neo remembers what you said earlier in the session. Relevant long-term memories are also retrieved and injected into the system prompt.
+
+**Commands:**
+
+| Command | Action |
+|---|---|
+| `/status` | Live service health + lamp, TV, Spotify, presence state |
+| `/memory <query>` | Search long-term memory, return top 5 results |
+| `/scene_history` | Last 10 scene activations with trigger source and time |
+| `/remember <text>` | Manually store something as a long-term memory |
+| `/forget` | Clear conversation history (long-term memories kept) |
+| `/repair <task>` | Run a scheduled task, ask Claude to fix any errors, preview fix |
+| `/confirm` | Apply a pending `/repair` fix and re-run the task |
+| `/cancel` | Discard a pending `/repair` fix |
+
+**`/repair` self-repair loop:** if a task file fails, `/repair` captures the error, sends it to Claude with the file contents, receives corrected code, shows a preview in Telegram, and waits for `/confirm` before overwriting. A timestamped backup is made before any file is changed.
+
+---
+
+### Memory Store (`memory.py`)
+
+Persistent SQLite database at `data/memory.db`. Used by `tgvoice.py` for conversation history and by `hub.py` for scene event logging.
+
+**Embedding backend (auto-detected at startup, three-tier fallback):**
+
+1. `fastembed` BAAI/bge-small-en-v1.5 (384-dim, runs on Pi CPU) + `sqlite-vec` → KNN vector search
+2. `fastembed` + `numpy` cosine similarity → in-process vector search
+3. SQLite FTS5 → full-text search fallback
+
+The model loads in a background thread on startup (~45 MB download on first run). FTS5 is used until the model is ready — no blocking, no crashes.
+
+**Tables:**
+
+| Table | Purpose |
+|---|---|
+| `memories` | Long-term storage — manually stored notes, ingested documents |
+| `memories_fts` | FTS5 index on `memories` (auto-maintained via triggers) |
+| `conversation` | Rolling conversation history, max 1000 turns (auto-trimmed) |
+| `scene_log` | Every scene activation: scene name, trigger source, timestamp |
+| `sensor_log` | Future GPIO / sensor readings |
+
+**Public API:**
+
+```python
+memory.init()                               # create tables, start background loader
+memory.store_conversation(role, content)    # append a turn
+memory.get_recent(n=15)                     # last n turns as [{role, content}] for Claude
+memory.store_memory(content, role, source)  # embed and persist a long-term memory
+memory.search(query, n=5)                   # semantic or FTS search
+memory.store_scene_event(scene, triggered_by)  # log scene activation
+memory.get_scene_history(scene=None, n=20)     # retrieve scene log
+memory.ingest_url(url)                      # fetch, chunk, embed, store a webpage
+memory.ingest_pdf(path)                     # extract, chunk, embed, store a PDF
+memory.prune_conversation(days=30)          # delete old conversation rows
+```
+
+---
+
+### Scheduled Tasks (`scheduler.py` + `tasks/`)
+
+`scheduler.py` loads Python files from `tasks/` at startup and runs them on a cron schedule using APScheduler. It runs as a daemon background thread inside `hub.py` — if the scheduler fails it never takes down the hub.
+
+**Task file format** — header comment block at the top of each `.py` file:
+
+```python
+# SCHEDULE: daily at 07:30
+# ENABLED: false
+# DESCRIPTION: Send morning briefing to Telegram
+```
+
+Supported schedule expressions:
+- `daily at HH:MM`
+- `weekly on <weekday> at HH:MM`
+
+A task that fails 3 consecutive times is automatically disabled (`ENABLED` set to `false` in the file header) and a warning is logged.
+
+**Built-in tasks (all disabled by default — set `ENABLED: true` to activate):**
+
+| Task | Schedule | Description |
+|---|---|---|
+| `tasks/morning_brief.py` | Daily 07:30 | Telegram message with date, Bayern fixture, uptime, last 3 scenes, weather |
+| `tasks/disk_check.py` | Daily 09:00 | Alert if root partition exceeds 85% |
+| `tasks/memory_cleanup.py` | Sunday 03:00 | Delete conversation rows older than 30 days |
+
+**Enabling a task:**
+
+```bash
+# Edit the header in the task file
+sed -i 's/# ENABLED: false/# ENABLED: true/' tasks/morning_brief.py
+sudo systemctl restart hub
+```
+
+---
+
+### WiZ Lamp Service (`wiz-lamp/app.py`)
 
 Flask API on port 5000. Communicates with the WiZ bulb directly over UDP using `pywizlight`.
 
@@ -250,21 +364,39 @@ The hub pattern (scenes.json + parallel threads) scales to more devices. Add a s
 
 ```
 smarthome/
-├── hub.py          Central Flask API (port 5001)
-├── tv.py           Samsung TV driver (samsungtvws + WoL)
-├── scenes.json     Scene definitions (edit to add/change scenes)
-├── tags.json       NFC tag → scene mappings (auto-updated at runtime)
+├── hub.py               Central Flask API (port 5001)
+├── tv.py                Samsung TV driver (samsungtvws + WoL)
+├── spotify.py           Spotify Web API wrapper (OAuth, playback)
+├── beat_sync.py         BPM-driven lamp pulse synced to Spotify
+├── auth.py              API key auth (before_request hook)
+├── memory.py            Vector memory store (SQLite + fastembed/FTS5)
+├── scheduler.py         APScheduler background task runner
+├── backup.py            Timestamped file backup utility
+├── tgvoice.py           Telegram bot (Whisper + Claude + memory)
+├── voice.py             Local mic VAD → Whisper → Claude pipeline
+├── bavaria_notifier.py  Bayern Munich goal/match Telegram notifier
+├── scenes.json          Scene definitions (edit to add/change scenes)
+├── tags.json            NFC tag → scene mappings (auto-updated)
+├── .env.example         Template for all environment variables
+├── hub.env.example      Template for hub-specific env vars
 ├── requirements.txt
-├── hub.service     systemd unit for hub.py
-└── install.sh      Installs and enables hub.service
+├── hub.service          systemd unit for hub.py
+│
+├── tasks/
+│   ├── morning_brief.py   Daily 07:30 — Telegram morning briefing
+│   ├── disk_check.py      Daily 09:00 — disk usage alert
+│   └── memory_cleanup.py  Sunday 03:00 — prune old conversations
+│
+└── data/                  Runtime data (gitignored)
+    ├── memory.db          SQLite database (conversation + memories + logs)
+    └── backups/           Pre-repair file backups (timestamped)
 
 wiz-lamp/
-├── app.py          WiZ lamp Flask API (port 5000)
-├── discover_lamp.py Find the lamp IP on the local network
-├── config.env      LAMP_IP and PORT
-├── requirements.txt
-├── wiz-lamp.service systemd unit for app.py
-└── install.sh      Installs and enables wiz-lamp.service
+├── app.py               WiZ lamp Flask API (port 5000)
+├── discover_lamp.py     Network discovery helper
+├── config.env           LAMP_IP and PORT
+├── wiz-lamp.service     systemd unit
+└── install.sh           Installs and enables wiz-lamp.service
 ```
 
 ---

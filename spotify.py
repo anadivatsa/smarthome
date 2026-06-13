@@ -36,7 +36,7 @@ if _env_file.exists():
 
 CLIENT_ID     = os.getenv("SPOTIFY_CLIENT_ID", "")
 CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "")
-REDIRECT_URI  = os.getenv("SPOTIFY_REDIRECT_URI", "http://192.168.1.8:5001/spotify/callback")
+REDIRECT_URI  = os.getenv("SPOTIFY_REDIRECT_URI", "")
 
 _SCOPES = " ".join([
     "user-read-playback-state",
@@ -188,7 +188,7 @@ def _post(path: str, body=None):
 def _auth_hint() -> str:
     if not CLIENT_ID or not CLIENT_SECRET:
         return "Spotify not configured — add SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET to smarthome/spotify.env"
-    return "Not authenticated — visit http://192.168.1.8:5001/spotify/auth"
+    return "Not authenticated — visit http://<hub-ip>:5001/spotify/auth"
 
 
 # ---------------------------------------------------------------------------

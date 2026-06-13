@@ -3,13 +3,14 @@ import requests
 import time
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 BAYERN_ID = 40
 API_BASE = "https://api.openligadb.de"
 
-STATE_FILE = "/home/anadivatsa/.bayern_state.json"
+STATE_FILE = str(Path.home() / ".bayern_state.json")
 
 def send(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"

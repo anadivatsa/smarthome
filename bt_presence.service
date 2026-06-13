@@ -1,0 +1,20 @@
+[Unit]
+Description=Neo Bluetooth Presence Detection
+After=network-online.target hub.service bluetooth.service
+Wants=network-online.target bluetooth.service
+
+[Service]
+Type=simple
+User=anadivatsa
+WorkingDirectory=/home/anadivatsa/smarthome
+ExecStart=/home/anadivatsa/smarthome/venv/bin/python bt_presence.py
+Restart=on-failure
+RestartSec=15
+EnvironmentFile=-/home/anadivatsa/smarthome/hub.env
+EnvironmentFile=-/home/anadivatsa/smarthome/bt_presence.env
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

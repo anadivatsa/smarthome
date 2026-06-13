@@ -16,8 +16,9 @@ presence.json
 *.ppn
 *.onnx
 
-# Contains live API key — never commit
+# Contain live API key — never commit
 KEY_URLS.txt
+SIRI_SHORTCUTS.md
 
 # Runtime data — never commit DB or backups
 data/

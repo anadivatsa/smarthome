@@ -465,3 +465,167 @@ If you access Neo remotely, use [Tailscale](https://tailscale.com/): install it 
 | `smarthome/spotify_tokens.json` | Spotify OAuth tokens | ✅ |
 
 See `.env.example` for a full template with all variable names.
+
+---
+
+## Security
+
+### API key authentication
+
+All hub endpoints require a `NEO_API_KEY` sent via:
+
+| Client | How |
+|---|---|
+| curl / scripts | `X-Neo-Key: <key>` header |
+| Siri Shortcuts | Append `?key=<key>` to the URL |
+| NFC tags | Append `?key=<key>` to the URL |
+| Dashboard | Prompted on first visit; stored in sessionStorage |
+| tgvoice / voice | Auto-read from `hub.env` via systemd EnvironmentFile |
+
+**Excluded endpoints (always public, no key required):**
+
+- `GET /` — dashboard HTML
+- `GET /spotify/auth`, `/spotify/callback`, `/spotify/exchange` — OAuth flow
+- `GET /shortcuts` — Siri reference page
+
+**Rate limits:**
+
+| Path prefix | Limit |
+|---|---|
+| `/scene/*` | 10 / minute |
+| `/tv/*` | 30 / minute |
+| `/spotify/*` | 20 / minute |
+| `/nfc/*` | 5 / minute |
+| everything else | 120 / minute |
+
+### Rotating the key
+
+```bash
+python3 -c "import secrets; print('NEO_API_KEY=' + secrets.token_urlsafe(32))" \
+  > smarthome/hub.env
+chmod 600 smarthome/hub.env
+sudo systemctl restart hub tgvoice voice
+# Re-generate SIRI_SHORTCUTS.md if needed
+```
+
+After rotating, update `?key=` in every Siri Shortcut and NFC tag URL.
+
+---
+
+## Memory
+
+Neo has persistent vector memory backed by SQLite (`data/memory.db`).
+
+### Embedding backend
+
+Auto-detected at startup — three-tier fallback, never crashes:
+
+1. **fastembed** `BAAI/bge-small-en-v1.5` (384-dim, CPU-only) + **sqlite-vec** → KNN vector search
+2. **fastembed** + **numpy** cosine similarity → in-process search
+3. **SQLite FTS5** → full-text keyword fallback
+
+The model loads in a background thread (~45 MB download on first run). FTS5 is used until the model is ready. Check which backend is active with:
+
+```
+sudo journalctl -u hub | grep "embedding backend"
+```
+
+### Telegram memory commands
+
+| Command | Action |
+|---|---|
+| `/memory <query>` | Semantic search over long-term memory, top 5 results |
+| `/scene_history` | Last 10 scene activations with trigger source and timestamp |
+| `/remember <text>` | Manually store something as a long-term memory |
+| `/forget` | Clear conversation history (long-term memories are kept) |
+
+### Scene activation log
+
+Every scene activation is logged to `scene_log` with a trigger source:
+
+| Source | Trigger |
+|---|---|
+| `nfc` | Tap an NFC tag |
+| `telegram` | Message or voice command via Telegram bot |
+| `siri` | Siri Shortcut (User-Agent or `?siri=1` param) |
+| `hub_dashboard` | Web dashboard (request has a Referer header) |
+| `api` | Direct API call |
+
+Query via `GET /api/scene_log?n=20` (auth required).
+
+### Memory API endpoints
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/memory?q=<query>&n=5` | Semantic search, returns `{results: [...]}` |
+| `GET /api/scene_log?n=20` | Scene history, returns `{log: [...]}` |
+| `GET /api/info` | Hostname, IPs, version, uptime, service states |
+
+---
+
+## Scheduled Tasks
+
+Tasks live in `tasks/` as plain Python files with a header comment block:
+
+```python
+# SCHEDULE: daily at 08:00
+# ENABLED: true
+# DESCRIPTION: Send morning briefing to Telegram
+```
+
+Supported schedule expressions:
+- `daily at HH:MM`
+- `weekly on <weekday> at HH:MM`
+
+The scheduler runs as a daemon background thread inside `hub.py`. Failed tasks are logged. A task that fails 3 consecutive times is auto-disabled (`ENABLED` → `false`).
+
+### Built-in tasks
+
+| File | Schedule | Status | Description |
+|---|---|---|---|
+| `tasks/morning_brief.py` | Daily 08:00 | **enabled** | Telegram briefing: date, Bayern fixture, uptime, last scenes, weather |
+| `tasks/disk_check.py` | Daily 09:00 | **enabled** | Alert via Telegram if root partition > 85% |
+| `tasks/memory_cleanup.py` | Sunday 03:00 | disabled | Delete conversation rows older than 30 days |
+
+### Enabling / disabling a task
+
+```bash
+# Enable
+sed -i 's/# ENABLED: false/# ENABLED: true/' tasks/memory_cleanup.py
+sudo systemctl restart hub
+
+# Disable
+sed -i 's/# ENABLED: true/# ENABLED: false/' tasks/morning_brief.py
+sudo systemctl restart hub
+```
+
+### Self-repair via Telegram
+
+```
+/repair morning_brief   — run task, capture error, ask Claude for fix
+/confirm                — apply fix and re-run
+/cancel                 — discard fix
+```
+
+A timestamped backup of the original file is saved to `data/backups/` before any fix is applied.
+
+---
+
+## Remote Access (Tailscale)
+
+Neo, the iPhone, and the laptop are all enrolled in the same Tailscale network:
+
+| Device | Tailscale IP |
+|---|---|
+| Neo (Pi) | 100.96.187.24 |
+| iPhone | 100.66.45.11 |
+| Laptop | 100.101.104.25 |
+
+The hub is reachable from any enrolled device at `http://100.96.187.24:5001` — no port forwarding, no internet exposure.
+
+**Use Tailscale URLs in Siri Shortcuts** so they work from anywhere, not just home WiFi. See `SIRI_SHORTCUTS.md` for all URLs with the API key pre-filled (this file is gitignored — it lives on disk only).
+
+```bash
+# Check Neo's current IPs
+curl -s "http://localhost:5001/api/info?key=$(grep NEO_API_KEY hub.env | cut -d= -f2)"
+```

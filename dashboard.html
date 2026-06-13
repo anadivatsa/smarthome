@@ -153,15 +153,55 @@ input[type=range]::-webkit-slider-thumb {
 
 /* Divider */
 hr { border: none; border-top: 1px solid var(--border); margin: 4px 0 16px; }
+
+/* Key modal */
+#keyOverlay {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85);
+  z-index: 200; align-items: center; justify-content: center; padding: 24px;
+}
+#keyOverlay.show { display: flex; }
+#keyModal {
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 28px 24px; width: 100%; max-width: 380px;
+}
+#keyModal h2 { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+#keyModal p  { font-size: 13px; color: var(--muted); margin-bottom: 20px; line-height: 1.5; }
+#keyInput {
+  width: 100%; background: #111; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--text); font-size: 14px; font-family: monospace;
+  padding: 12px 14px; margin-bottom: 12px; outline: none;
+}
+#keyInput:focus { border-color: var(--accent); }
+#keySubmit {
+  width: 100%; background: var(--accent); border: none; border-radius: var(--radius-sm);
+  color: #fff; font-size: 15px; font-weight: 600; padding: 13px;
+  cursor: pointer; transition: background 0.15s;
+}
+#keySubmit:active { background: var(--accent2); }
+#keyError { font-size: 12px; color: var(--red); margin-top: 8px; min-height: 16px; text-align: center; }
 </style>
 </head>
 <body>
 
+<!-- API key modal -->
+<div id="keyOverlay">
+  <div id="keyModal">
+    <h2>🔑 API Key</h2>
+    <p>Enter the <code>NEO_API_KEY</code> from <code>hub.env</code> to unlock the dashboard. Stored in sessionStorage — cleared when you close the tab.</p>
+    <input id="keyInput" type="password" placeholder="Paste your NEO_API_KEY…" autocomplete="off" autocorrect="off" spellcheck="false">
+    <button id="keySubmit" onclick="submitKey()">Unlock</button>
+    <div id="keyError"></div>
+  </div>
+</div>
+
 <div class="header">
   <h1>⚡ Neo</h1>
-  <div class="presence-pill" id="presencePill" onclick="togglePresence()">
-    <div class="dot"></div>
-    <span id="presenceLabel">—</span>
+  <div style="display:flex;gap:8px;align-items:center">
+    <div class="presence-pill" id="presencePill" onclick="togglePresence()">
+      <div class="dot"></div>
+      <span id="presenceLabel">—</span>
+    </div>
+    <div class="presence-pill" onclick="resetKey()" title="Change API key" style="padding:5px 10px;font-size:15px;">🔑</div>
   </div>
 </div>
 
@@ -259,7 +299,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 4px 0 16px; }
     <span class="slabel">🔉</span>
     <input type="range" id="spVolSlider" min="0" max="100" value="50"
            oninput="document.getElementById('spVolVal').textContent=this.value+'%'"
-           onchange="fetch('/spotify/volume/'+this.value)">
+           onchange="hubFetch('/spotify/volume/'+this.value)">
     <span class="slabel" id="spVolVal">50%</span>
   </div>
 </div>
@@ -267,6 +307,76 @@ hr { border: none; border-top: 1px solid var(--border); margin: 4px 0 16px; }
 <div id="toast"></div>
 
 <script>
+// ---------------------------------------------------------------------------
+// API key — stored in sessionStorage (cleared when tab closes)
+// ---------------------------------------------------------------------------
+const KEY_STORAGE = 'neo_api_key';
+
+function getKey() { return sessionStorage.getItem(KEY_STORAGE) || ''; }
+function setKey(k) { sessionStorage.setItem(KEY_STORAGE, k); }
+function clearKey() { sessionStorage.removeItem(KEY_STORAGE); }
+
+function apiHeaders(extra = {}) {
+  const h = { ...extra };
+  const k = getKey();
+  if (k) h['X-Neo-Key'] = k;
+  return h;
+}
+
+function showKeyModal(errorMsg = '') {
+  document.getElementById('keyOverlay').classList.add('show');
+  document.getElementById('keyError').textContent = errorMsg;
+  const inp = document.getElementById('keyInput');
+  inp.value = '';
+  setTimeout(() => inp.focus(), 50);
+}
+
+function hideKeyModal() {
+  document.getElementById('keyOverlay').classList.remove('show');
+}
+
+async function submitKey() {
+  const key = document.getElementById('keyInput').value.trim();
+  if (!key) { document.getElementById('keyError').textContent = 'Key cannot be empty.'; return; }
+  // Probe a cheap endpoint to verify the key before storing
+  try {
+    const r = await fetch('/scenes', { headers: { 'X-Neo-Key': key } });
+    if (r.status === 401) { document.getElementById('keyError').textContent = 'Wrong key — try again.'; return; }
+    setKey(key);
+    hideKeyModal();
+    refreshStatus();
+  } catch(e) {
+    document.getElementById('keyError').textContent = 'Could not reach hub.';
+  }
+}
+
+function resetKey() {
+  clearKey();
+  showKeyModal();
+}
+
+// Submit on Enter
+document.getElementById('keyInput').addEventListener('keydown', e => { if (e.key === 'Enter') submitKey(); });
+
+// On load: show modal if no key stored
+if (!getKey()) showKeyModal();
+
+// ---------------------------------------------------------------------------
+// Hub fetch helper — handles 401 by re-prompting
+// ---------------------------------------------------------------------------
+async function hubFetch(url, opts = {}) {
+  const headers = apiHeaders(opts.headers || {});
+  const r = await fetch(url, { ...opts, headers });
+  if (r.status === 401) {
+    showKeyModal('Session expired or key changed. Re-enter your key.');
+    throw new Error('401');
+  }
+  return r;
+}
+
+// ---------------------------------------------------------------------------
+// Scenes
+// ---------------------------------------------------------------------------
 const SCENES = [
   { name:'movie',    icon:'🎬', label:'Movie'     },
   { name:'netflix',  icon:'📺', label:'Netflix'   },
@@ -286,7 +396,6 @@ const SCENES = [
   { name:'off',      icon:'⚫', label:'Off'       },
 ];
 
-// Build scenes grid
 const grid = document.getElementById('scenesGrid');
 SCENES.forEach(s => {
   const btn = document.createElement('div');
@@ -304,37 +413,37 @@ async function runScene(name, btn) {
   btn.classList.add('loading');
   if (activeScene) document.getElementById('scene-' + activeScene)?.classList.remove('active');
   try {
-    const r = await fetch('/scene/' + name);
-    const d = await r.json();
+    const r = await hubFetch('/scene/' + name);
+    await r.json();
     activeScene = name;
     btn.classList.add('active');
     toast('Scene: ' + name);
     refreshStatus();
-  } catch(e) { toast('Error running scene'); }
+  } catch(e) { if (e.message !== '401') toast('Error running scene'); }
   finally { btn.classList.remove('loading'); }
 }
 
 async function lamp(ep) {
   try {
-    await fetch('/lamp/' + ep);
+    await hubFetch('/lamp/' + ep);
     toast('Lamp: ' + ep);
     setTimeout(refreshStatus, 400);
-  } catch(e) { toast('Lamp error'); }
+  } catch(e) { if (e.message !== '401') toast('Lamp error'); }
 }
 
 async function tv(ep) {
   try {
-    await fetch('/tv/' + ep);
+    await hubFetch('/tv/' + ep);
     toast('TV: ' + ep.replace('app/', '').replace('volume/', 'vol '));
     setTimeout(refreshStatus, 800);
-  } catch(e) { toast('TV error'); }
+  } catch(e) { if (e.message !== '401') toast('TV error'); }
 }
 
 async function sp(ep) {
   try {
-    await fetch('/spotify/' + ep);
+    await hubFetch('/spotify/' + ep);
     setTimeout(refreshStatus, 600);
-  } catch(e) { toast('Spotify error'); }
+  } catch(e) {}
 }
 
 async function togglePresence() {
@@ -342,7 +451,11 @@ async function togglePresence() {
   const current = pill.classList.contains('home') ? 'home' : 'away';
   const next = current === 'home' ? 'away' : 'home';
   try {
-    await fetch('/presence', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({state: next}) });
+    await hubFetch('/presence', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({state: next}),
+    });
     updatePresence({state: next});
     toast('Presence: ' + next);
   } catch(e) {}
@@ -356,11 +469,12 @@ function updatePresence(data) {
 }
 
 async function refreshStatus() {
+  if (!getKey()) return;
   const [lamp, tv, sp, pres] = await Promise.allSettled([
-    fetch('/lamp/status').then(r => r.json()),
-    fetch('/tv/status').then(r => r.json()),
-    fetch('/spotify/status').then(r => r.json()),
-    fetch('/presence').then(r => r.json()),
+    hubFetch('/lamp/status').then(r => r.json()),
+    hubFetch('/tv/status').then(r => r.json()),
+    hubFetch('/spotify/status').then(r => r.json()),
+    hubFetch('/presence').then(r => r.json()),
   ]);
 
   // Lamp

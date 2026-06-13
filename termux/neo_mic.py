@@ -2,60 +2,45 @@
 """
 neo_mic.py — Neo mic node for Termux (Android)
 
-Captures phone mic continuously, detects speech via energy threshold,
-POSTs WAV chunks to Neo hub /api/voice for Whisper→Claude dispatch.
+Records audio via termux-microphone-record (no sounddevice/OpenSLES needed),
+POSTs each chunk to Neo's /api/voice for Whisper→Claude dispatch.
 
 ── Setup (run once in Termux) ──────────────────────────────────────────────
-  pkg install python libportaudio
-  pip install sounddevice numpy requests
-  export NEO_API_KEY="QbWBj9LS58rQSueXAAI6eWm2Xrx6gAIU_okG7-53n9c"
-  export NEO_HUB_URL="http://192.168.1.8:5001"    # default, can omit
+  pkg install termux-api python
+  pip install requests
+  # Also install Termux:API app from F-Droid and grant mic permission
 
 ── Run in foreground ────────────────────────────────────────────────────────
   python neo_mic.py
 
 ── Run as persistent background process ────────────────────────────────────
   nohup python neo_mic.py >> ~/neo_mic.log 2>&1 &
-  echo $! > ~/neo_mic.pid          # save PID to kill later
-  kill $(cat ~/neo_mic.pid)        # stop it
+  echo $! > ~/neo_mic.pid
+  kill $(cat ~/neo_mic.pid)   # stop it
 
-── Tune ENERGY_THRESH ───────────────────────────────────────────────────────
-  Default 500 works for most Android mics in a quiet room.
-  If it triggers on silence → raise (600–800).
-  If it misses quiet speech → lower (300–400).
-  Run with --calibrate to measure your ambient noise floor.
+── Tune CHUNK_SEC ───────────────────────────────────────────────────────────
+  Default 4s. Shorter = more responsive but more API calls.
+  Longer = fewer calls but commands feel delayed.
 """
 
-import io
 import logging
 import os
+import subprocess
 import sys
+import tempfile
 import time
-import wave
-from collections import deque
-
-import numpy as np
-import requests
 
 try:
-    import sounddevice as sd
+    import requests
 except ImportError:
-    print("ERROR: sounddevice not found.")
-    print("Run:  pkg install libportaudio && pip install sounddevice numpy requests")
+    print("ERROR: requests not found. Run: pip install requests")
     sys.exit(1)
 
 # ── Config ───────────────────────────────────────────────────────────────────
-HUB_URL        = os.getenv("NEO_HUB_URL",    "http://192.168.1.8:5001")
-API_KEY        = os.getenv("NEO_API_KEY",    "")
-SAMPLE_RATE    = 16000
-CHANNELS       = 1
-DTYPE          = "int16"
-CHUNK_MS       = 30
-CHUNK_FRAMES   = SAMPLE_RATE * CHUNK_MS // 1000   # 480 samples per frame
-ENERGY_THRESH  = int(os.getenv("ENERGY_THRESH",  "500"))
-SILENCE_SEC    = float(os.getenv("SILENCE_SEC",  "1.0"))
-MIN_SPEECH_SEC = float(os.getenv("MIN_SPEECH_SEC", "0.4"))
-PRE_PAD_MS     = 300
+HUB_URL     = os.getenv("NEO_HUB_URL",  "http://192.168.1.8:5001")
+API_KEY     = os.getenv("NEO_API_KEY",  "")
+CHUNK_SEC   = int(os.getenv("CHUNK_SEC",   "4"))
+SAMPLE_RATE = int(os.getenv("SAMPLE_RATE", "16000"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,30 +49,40 @@ logging.basicConfig(
 )
 log = logging.getLogger("neo_mic")
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
 
-def rms(frame: np.ndarray) -> float:
-    return float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
+# ── Audio capture ─────────────────────────────────────────────────────────────
+
+def record_chunk(path: str) -> bool:
+    """
+    Record CHUNK_SEC seconds to path via termux-microphone-record.
+    termux-microphone-record may return immediately (non-blocking), so we
+    sleep for the duration then stop explicitly before reading the file.
+    """
+    subprocess.Popen(
+        ["termux-microphone-record", "-f", path,
+         "-l", str(CHUNK_SEC), "-r", str(SAMPLE_RATE), "-c", "1"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    time.sleep(CHUNK_SEC + 0.5)
+    # Stop in case it's still recording (no-op if already done)
+    subprocess.run(
+        ["termux-microphone-record", "-q"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    return os.path.exists(path) and os.path.getsize(path) > 0
 
 
-def frames_to_wav(frames: list) -> bytes:
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(CHANNELS)
-        wf.setsampwidth(2)
-        wf.setframerate(SAMPLE_RATE)
-        wf.writeframes(b"".join(f.tobytes() for f in frames))
-    return buf.getvalue()
+# ── Hub POST ─────────────────────────────────────────────────────────────────
 
-
-def post_audio(wav_bytes: bytes) -> dict | None:
+def post_audio(path: str) -> dict | None:
     try:
-        r = requests.post(
-            f"{HUB_URL}/api/voice",
-            files={"audio": ("clip.wav", wav_bytes, "audio/wav")},
-            headers={"X-Neo-Key": API_KEY},
-            timeout=60,   # first call loads Whisper on hub (~30s)
-        )
+        with open(path, "rb") as f:
+            r = requests.post(
+                f"{HUB_URL}/api/voice",
+                files={"audio": ("clip.wav", f, "audio/wav")},
+                headers={"X-Neo-Key": API_KEY},
+                timeout=60,   # first call loads Whisper on hub (~30s)
+            )
         if r.ok:
             return r.json()
         log.warning("Hub %d: %s", r.status_code, r.text[:120])
@@ -96,93 +91,40 @@ def post_audio(wav_bytes: bytes) -> dict | None:
     return None
 
 
-# ── Calibration mode ─────────────────────────────────────────────────────────
-
-def calibrate(seconds: int = 5):
-    """Measure ambient noise floor to help set ENERGY_THRESH."""
-    print(f"\nCalibrating — stay quiet for {seconds} seconds…")
-    samples = []
-    with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,
-                        dtype=DTYPE, blocksize=CHUNK_FRAMES) as stream:
-        end = time.monotonic() + seconds
-        while time.monotonic() < end:
-            frame, _ = stream.read(CHUNK_FRAMES)
-            samples.append(rms(frame))
-    floor   = float(np.mean(samples))
-    peak    = float(np.max(samples))
-    suggest = int(floor * 3)
-    print(f"\n  Ambient floor : {floor:.0f} RMS")
-    print(f"  Ambient peak  : {peak:.0f} RMS")
-    print(f"  Suggested ENERGY_THRESH: {suggest}")
-    print(f"\n  Run: export ENERGY_THRESH={suggest}")
-    print(f"  Then: python neo_mic.py\n")
-
-
 # ── Main loop ────────────────────────────────────────────────────────────────
 
 def run():
-    pad_frames    = PRE_PAD_MS // CHUNK_MS
-    ring          = deque(maxlen=pad_frames)
-    voiced        = []
-    in_speech     = False
-    silence_count = 0
-    silence_limit = round(SILENCE_SEC * 1000 / CHUNK_MS)
-
-    log.info("Neo mic node — hub: %s  threshold: %d", HUB_URL, ENERGY_THRESH)
+    log.info("Neo mic node — hub: %s  chunk: %ds", HUB_URL, CHUNK_SEC)
     if not API_KEY:
         log.warning("NEO_API_KEY not set — hub will reject requests")
 
-    with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,
-                        dtype=DTYPE, blocksize=CHUNK_FRAMES) as stream:
-        log.info("Microphone open — listening…")
-        while True:
-            frame, _ = stream.read(CHUNK_FRAMES)
-            energy   = rms(frame)
-            is_voice = energy > ENERGY_THRESH
+    while True:
+        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        tmp.close()
+        try:
+            if not record_chunk(tmp.name):
+                log.warning("Record produced no file — is Termux:API installed and mic permission granted?")
+                time.sleep(2)
+                continue
 
-            if not in_speech:
-                ring.append(frame)
-                if is_voice:
-                    in_speech     = True
-                    silence_count = 0
-                    voiced        = list(ring)
-                    log.info("Speech start  energy=%.0f", energy)
-            else:
-                voiced.append(frame)
-                if is_voice:
-                    silence_count = 0
-                else:
-                    silence_count += 1
-                    if silence_count >= silence_limit:
-                        duration = len(voiced) * CHUNK_MS / 1000
-                        in_speech     = False
-                        silence_count = 0
-
-                        if duration < MIN_SPEECH_SEC:
-                            log.debug("Too short (%.2fs) — skipped", duration)
-                            voiced = []
-                            continue
-
-                        log.info("Speech end — %.1fs — posting to hub…", duration)
-                        wav    = frames_to_wav(voiced)
-                        voiced = []
-
-                        result = post_audio(wav)
-                        if result:
-                            t = result.get("transcript", "")
-                            if t:
-                                log.info('Heard: "%s"', t)
-                            for act in result.get("actions", []):
-                                if act.get("action"):
-                                    log.info("→ %s  (%s)", act["action"], act.get("reason", ""))
-                                else:
-                                    log.info("No-op: %s", act.get("reason", ""))
+            result = post_audio(tmp.name)
+            if result:
+                t = result.get("transcript", "")
+                if t:
+                    log.info('Heard: "%s"', t)
+                for act in result.get("actions", []):
+                    if act.get("action"):
+                        log.info("→ %s  (%s)", act["action"], act.get("reason", ""))
+                    else:
+                        log.debug("No-op: %s", act.get("reason", ""))
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--calibrate":
-        calibrate()
-        sys.exit(0)
     try:
         run()
     except KeyboardInterrupt:

@@ -46,6 +46,18 @@ import auth
 import tv as TV
 import spotify as SP
 import beat_sync as BS
+try:
+    import memory as MEM
+    import scheduler as SCHED
+    _MEM_OK   = True
+    _SCHED_OK = True
+except Exception as _import_err:
+    import logging as _lg
+    _lg.getLogger("hub").warning("Optional imports failed: %s", _import_err)
+    MEM = None
+    SCHED = None
+    _MEM_OK   = False
+    _SCHED_OK = False
 
 # ---------------------------------------------------------------------------
 # Config
@@ -84,6 +96,26 @@ def _maybe_deprecate(response):
     if request.method == "GET":
         response.headers["X-Deprecated"] = _DEPRECATION_NOTE
     return response
+
+
+def _infer_trigger_source() -> str:
+    """Guess who called the endpoint from request headers/params."""
+    ua = request.headers.get("User-Agent", "").lower()
+    if request.args.get("siri") == "1" or "shortcuts" in ua:
+        return "siri"
+    ref = request.headers.get("Referer", "")
+    if ref:
+        return "hub_dashboard"
+    return "api"
+
+
+def _log_scene(scene: str, triggered_by: str) -> None:
+    """Best-effort scene event log — never raises."""
+    if _MEM_OK:
+        try:
+            MEM.store_scene_event(scene, triggered_by)
+        except Exception:
+            pass
 
 
 _scenes_cache: dict | None = None
@@ -277,6 +309,8 @@ def _run_scene(name: str) -> tuple[bool, dict]:
 @limiter.limit("10/minute")
 def route_scene(name):
     ok, data = _run_scene(name)
+    if ok:
+        _log_scene(name, _infer_trigger_source())
     resp = jsonify(data), (200 if ok else 207)
     return _maybe_deprecate(resp[0]), resp[1]
 
@@ -601,7 +635,7 @@ def _normalize_uid(uid: str) -> str:
     return uid.upper().replace(":", "").replace("-", "").strip()
 
 
-def _trigger_tag(uid: str) -> tuple[int, dict]:
+def _trigger_tag(uid: str, triggered_by: str = "nfc") -> tuple[int, dict]:
     """Look up uid in tags.json and run the mapped scene. Always returns 200."""
     uid   = _normalize_uid(uid)
     scene = _load_tags().get(uid)
@@ -613,6 +647,8 @@ def _trigger_tag(uid: str) -> tuple[int, dict]:
             "scenes":     list(_load_scenes().keys()),
         }
     ok, data = _run_scene(scene)
+    if ok:
+        _log_scene(scene, triggered_by)
     data.update({"triggered": True, "uid": uid, "scene": scene})
     return (200 if ok else 207), data
 
@@ -744,6 +780,39 @@ def route_shortcuts():
 
 
 # ---------------------------------------------------------------------------
+# Memory API endpoints
+# ---------------------------------------------------------------------------
+
+@app.route("/api/memory")
+@limiter.limit("30/minute")
+def route_api_memory():
+    if not _MEM_OK:
+        return jsonify({"error": "memory module not available"}), 503
+    q = request.args.get("q", "").strip()
+    n = min(int(request.args.get("n", 5)), 20)
+    if not q:
+        return jsonify({"error": "Provide ?q=<query>"}), 400
+    try:
+        results = MEM.search(q, n=n)
+        return jsonify({"results": results})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/scene_log")
+@limiter.limit("30/minute")
+def route_api_scene_log():
+    if not _MEM_OK:
+        return jsonify({"error": "memory module not available"}), 503
+    n = min(int(request.args.get("n", 20)), 100)
+    try:
+        log_entries = MEM.get_scene_history(n=n)
+        return jsonify({"log": log_entries})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
 # Health / index
 # ---------------------------------------------------------------------------
 
@@ -786,6 +855,16 @@ def route_api():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    if _MEM_OK:
+        try:
+            MEM.init()
+        except Exception as _e:
+            import logging as _lg; _lg.getLogger("hub").warning("memory.init() failed: %s", _e)
+    if _SCHED_OK:
+        try:
+            SCHED.start()
+        except Exception as _e:
+            import logging as _lg; _lg.getLogger("hub").warning("scheduler.start() failed: %s", _e)
     print(f"Smart Home Hub  —  port {PORT}")
     print(f"TV: {TV.TV_IP}  Apps: {', '.join(TV.APPS)}  Sources: {', '.join(TV.SOURCES)}")
     app.run(host="0.0.0.0", port=PORT, threaded=True)

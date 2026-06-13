@@ -115,11 +115,15 @@ def bs_start() -> dict:
 
 def bs_stop() -> dict:
     global _thread
+    # Signal stop while holding the lock, then join outside it.
+    # Joining inside the lock would deadlock if the beat thread tries to
+    # acquire the lock (e.g. to read _bpm) before seeing the stop signal.
     with _lock:
         _stop_event.set()
-        if _thread:
-            _thread.join(timeout=3)
-            _thread = None
+        t = _thread
+        _thread = None
+    if t:
+        t.join(timeout=3)
     return {"ok": True, "note": "beat sync stopped"}
 
 
@@ -128,10 +132,12 @@ def bs_set_bpm(bpm: float) -> dict:
     bpm = max(40.0, min(240.0, float(bpm)))
     with _lock:
         _bpm = bpm
-        # Restart thread so new BPM takes effect immediately
         _stop_event.set()
-        if _thread:
-            _thread.join(timeout=2)
+        t = _thread
+        _thread = None
+    if t:
+        t.join(timeout=2)
+    with _lock:
         _start_thread()
     return {"ok": True, "bpm": _bpm, "note": "beat sync running"}
 

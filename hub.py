@@ -39,6 +39,8 @@ from pathlib import Path
 
 import requests
 from flask import Flask, jsonify, request, send_from_directory
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 import auth
 import tv as TV
@@ -58,10 +60,30 @@ PRESENCE_FILE = Path(__file__).parent / "presence.json"
 
 app = Flask(__name__)
 
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=["120/minute"],
+    storage_uri="memory://",
+)
+
 
 @app.before_request
 def _check_auth():
     return auth.check_auth()
+
+
+_DEPRECATION_NOTE = (
+    "GET on state-changing endpoints is deprecated; "
+    "switch to POST to suppress this header"
+)
+
+
+def _maybe_deprecate(response):
+    """Add X-Deprecated header when a state-changing route is called via GET."""
+    if request.method == "GET":
+        response.headers["X-Deprecated"] = _DEPRECATION_NOTE
+    return response
 
 
 _scenes_cache: dict | None = None
@@ -77,14 +99,25 @@ def _load_scenes() -> dict:
     return _scenes_cache
 
 
+_tags_cache: dict | None = None
+_tags_mtime: float = 0.0
+
+
 def _load_tags() -> dict:
-    return json.loads(TAGS_FILE.read_text()).get("tags", {})
+    global _tags_cache, _tags_mtime
+    mtime = TAGS_FILE.stat().st_mtime if TAGS_FILE.exists() else 0.0
+    if _tags_cache is None or mtime != _tags_mtime:
+        _tags_cache = json.loads(TAGS_FILE.read_text()).get("tags", {}) if TAGS_FILE.exists() else {}
+        _tags_mtime = mtime
+    return _tags_cache
 
 
 def _save_tag(uid: str, scene: str):
+    global _tags_cache, _tags_mtime
     data = json.loads(TAGS_FILE.read_text())
     data.setdefault("tags", {})[uid.upper()] = scene
     TAGS_FILE.write_text(json.dumps(data, indent=2))
+    _tags_cache = None  # invalidate cache
 
 
 def _get_presence() -> dict:
@@ -240,10 +273,12 @@ def _run_scene(name: str) -> tuple[bool, dict]:
 # Scene routes
 # ---------------------------------------------------------------------------
 
-@app.route("/scene/<name>")
+@app.route("/scene/<name>", methods=["GET", "POST"])
+@limiter.limit("10/minute")
 def route_scene(name):
     ok, data = _run_scene(name)
-    return jsonify(data), (200 if ok else 207)
+    resp = jsonify(data), (200 if ok else 207)
+    return _maybe_deprecate(resp[0]), resp[1]
 
 
 @app.route("/scenes")
@@ -257,58 +292,69 @@ def route_scenes():
 # ---------------------------------------------------------------------------
 
 @app.route("/tv/status")
+@limiter.limit("30/minute")
 def route_tv_status():
     return jsonify(TV.tv_status())
 
 
-@app.route("/tv/on")
+@app.route("/tv/on", methods=["GET", "POST"])
+@limiter.limit("30/minute")
 def route_tv_on():
     ok, err = TV.tv_on()
-    return jsonify({"ok": ok, "error": err})
+    return _maybe_deprecate(jsonify({"ok": ok, "error": err}))
 
 
-@app.route("/tv/off")
+@app.route("/tv/off", methods=["GET", "POST"])
+@limiter.limit("30/minute")
 def route_tv_off():
     ok, err = TV.tv_off()
-    return jsonify({"ok": ok, "error": err})
+    return _maybe_deprecate(jsonify({"ok": ok, "error": err}))
 
 
 # ---------------------------------------------------------------------------
 # TV — audio
 # ---------------------------------------------------------------------------
 
-@app.route("/tv/mute")
+@app.route("/tv/mute", methods=["GET", "POST"])
+@limiter.limit("30/minute")
 def route_tv_mute():
     ok, err = TV.tv_mute()
-    return jsonify({"ok": ok, "action": "mute_toggle", "error": err})
+    return _maybe_deprecate(jsonify({"ok": ok, "action": "mute_toggle", "error": err}))
 
 
-@app.route("/tv/volume/<int:delta>")
+@app.route("/tv/volume/<int:delta>", methods=["GET", "POST"])
+@limiter.limit("30/minute")
 def route_tv_volume(delta):
     ok, err = TV.tv_set_volume(delta)
-    return jsonify({"ok": ok, "delta": delta, "direction": "up" if delta > 0 else "down", "error": err})
+    return _maybe_deprecate(
+        jsonify({"ok": ok, "delta": delta, "direction": "up" if delta > 0 else "down", "error": err})
+    )
 
 
 # ---------------------------------------------------------------------------
 # TV — source
 # ---------------------------------------------------------------------------
 
-@app.route("/tv/source/<name>")
+@app.route("/tv/source/<name>", methods=["GET", "POST"])
+@limiter.limit("30/minute")
 def route_tv_source(name):
     ok, err = TV.tv_source(name)
-    return jsonify({"ok": ok, "source": name, "error": err,
-                    "available": list(TV.SOURCES.keys())})
+    return _maybe_deprecate(
+        jsonify({"ok": ok, "source": name, "error": err, "available": list(TV.SOURCES.keys())})
+    )
 
 
 # ---------------------------------------------------------------------------
 # TV — apps
 # ---------------------------------------------------------------------------
 
-@app.route("/tv/app/<name>")
+@app.route("/tv/app/<name>", methods=["GET", "POST"])
+@limiter.limit("30/minute")
 def route_tv_app(name):
     ok, err = TV.tv_launch_app(name)
-    return jsonify({"ok": ok, "app": name,
-                    "installed": list(TV.APPS.keys()), "error": err})
+    return _maybe_deprecate(
+        jsonify({"ok": ok, "app": name, "installed": list(TV.APPS.keys()), "error": err})
+    )
 
 
 @app.route("/tv/apps")
@@ -320,66 +366,81 @@ def route_tv_apps():
 # TV — playback
 # ---------------------------------------------------------------------------
 
-@app.route("/tv/play")
-def route_tv_play():    return jsonify({"ok": TV.tv_play()[0]})
+@app.route("/tv/play",   methods=["GET", "POST"])
+@limiter.limit("30/minute")
+def route_tv_play():    return _maybe_deprecate(jsonify({"ok": TV.tv_play()[0]}))
 
-@app.route("/tv/pause")
-def route_tv_pause():   return jsonify({"ok": TV.tv_pause()[0]})
+@app.route("/tv/pause",  methods=["GET", "POST"])
+@limiter.limit("30/minute")
+def route_tv_pause():   return _maybe_deprecate(jsonify({"ok": TV.tv_pause()[0]}))
 
-@app.route("/tv/stop")
-def route_tv_stop():    return jsonify({"ok": TV.tv_stop()[0]})
+@app.route("/tv/stop",   methods=["GET", "POST"])
+@limiter.limit("30/minute")
+def route_tv_stop():    return _maybe_deprecate(jsonify({"ok": TV.tv_stop()[0]}))
 
-@app.route("/tv/ff")
-def route_tv_ff():      return jsonify({"ok": TV.tv_ff()[0]})
+@app.route("/tv/ff",     methods=["GET", "POST"])
+@limiter.limit("30/minute")
+def route_tv_ff():      return _maybe_deprecate(jsonify({"ok": TV.tv_ff()[0]}))
 
-@app.route("/tv/rewind")
-def route_tv_rewind():  return jsonify({"ok": TV.tv_rewind()[0]})
+@app.route("/tv/rewind", methods=["GET", "POST"])
+@limiter.limit("30/minute")
+def route_tv_rewind():  return _maybe_deprecate(jsonify({"ok": TV.tv_rewind()[0]}))
 
-@app.route("/tv/next")
-def route_tv_next():    return jsonify({"ok": TV.tv_next()[0]})
+@app.route("/tv/next",   methods=["GET", "POST"])
+@limiter.limit("30/minute")
+def route_tv_next():    return _maybe_deprecate(jsonify({"ok": TV.tv_next()[0]}))
 
-@app.route("/tv/prev")
-def route_tv_prev():    return jsonify({"ok": TV.tv_prev()[0]})
+@app.route("/tv/prev",   methods=["GET", "POST"])
+@limiter.limit("30/minute")
+def route_tv_prev():    return _maybe_deprecate(jsonify({"ok": TV.tv_prev()[0]}))
 
 
 # ---------------------------------------------------------------------------
 # TV — navigation
 # ---------------------------------------------------------------------------
 
-@app.route("/tv/home")
-def route_tv_home():    return jsonify({"ok": TV.tv_home()[0]})
+@app.route("/tv/home",  methods=["GET", "POST"])
+@limiter.limit("30/minute")
+def route_tv_home():    return _maybe_deprecate(jsonify({"ok": TV.tv_home()[0]}))
 
-@app.route("/tv/back")
-def route_tv_back():    return jsonify({"ok": TV.tv_back()[0]})
+@app.route("/tv/back",  methods=["GET", "POST"])
+@limiter.limit("30/minute")
+def route_tv_back():    return _maybe_deprecate(jsonify({"ok": TV.tv_back()[0]}))
 
-@app.route("/tv/up")
-def route_tv_up():      return jsonify({"ok": TV.tv_up()[0]})
+@app.route("/tv/up",    methods=["GET", "POST"])
+@limiter.limit("30/minute")
+def route_tv_up():      return _maybe_deprecate(jsonify({"ok": TV.tv_up()[0]}))
 
-@app.route("/tv/down")
-def route_tv_down():    return jsonify({"ok": TV.tv_down()[0]})
+@app.route("/tv/down",  methods=["GET", "POST"])
+@limiter.limit("30/minute")
+def route_tv_down():    return _maybe_deprecate(jsonify({"ok": TV.tv_down()[0]}))
 
-@app.route("/tv/left")
-def route_tv_left():    return jsonify({"ok": TV.tv_left()[0]})
+@app.route("/tv/left",  methods=["GET", "POST"])
+@limiter.limit("30/minute")
+def route_tv_left():    return _maybe_deprecate(jsonify({"ok": TV.tv_left()[0]}))
 
-@app.route("/tv/right")
-def route_tv_right():   return jsonify({"ok": TV.tv_right()[0]})
+@app.route("/tv/right", methods=["GET", "POST"])
+@limiter.limit("30/minute")
+def route_tv_right():   return _maybe_deprecate(jsonify({"ok": TV.tv_right()[0]}))
 
-@app.route("/tv/enter")
-def route_tv_enter():   return jsonify({"ok": TV.tv_enter()[0]})
+@app.route("/tv/enter", methods=["GET", "POST"])
+@limiter.limit("30/minute")
+def route_tv_enter():   return _maybe_deprecate(jsonify({"ok": TV.tv_enter()[0]}))
 
 
 # ---------------------------------------------------------------------------
 # TV — raw key (catch-all)
 # ---------------------------------------------------------------------------
 
-@app.route("/tv/key/<key>")
+@app.route("/tv/key/<key>", methods=["GET", "POST"])
+@limiter.limit("30/minute")
 def route_tv_key(key):
     if key not in TV.KEY_WHITELIST:
         return jsonify({"ok": False, "key": key,
                         "error": f"Key '{key}' not in whitelist",
                         "allowed": sorted(TV.KEY_WHITELIST)}), 400
     ok, err = TV.tv_key(key)
-    return jsonify({"ok": ok, "key": key, "error": err})
+    return _maybe_deprecate(jsonify({"ok": ok, "key": key, "error": err}))
 
 
 # ---------------------------------------------------------------------------
@@ -387,10 +448,11 @@ def route_tv_key(key):
 # ---------------------------------------------------------------------------
 
 @app.route("/lamp/", defaults={"path": ""})
-@app.route("/lamp/<path:path>")
+@app.route("/lamp/<path:path>", methods=["GET", "POST"])
+@limiter.limit("60/minute")
 def route_lamp(path):
     ok, data = _lamp(path)
-    return jsonify(data), (200 if ok else 502)
+    return _maybe_deprecate(jsonify(data)), (200 if ok else 502)
 
 
 # ---------------------------------------------------------------------------
@@ -398,56 +460,65 @@ def route_lamp(path):
 # ---------------------------------------------------------------------------
 
 @app.route("/spotify/status")
+@limiter.limit("20/minute")
 def route_sp_status():
     return jsonify(SP.sp_status())
 
 
-@app.route("/spotify/play")
+@app.route("/spotify/play", methods=["GET", "POST"])
+@limiter.limit("20/minute")
 def route_sp_play():
-    uri = request.args.get("uri")
+    uri = request.args.get("uri") or (request.get_json(silent=True) or {}).get("uri")
     ok, err = SP.sp_play(uri)
-    return jsonify({"ok": ok, "uri": uri, "error": err})
+    return _maybe_deprecate(jsonify({"ok": ok, "uri": uri, "error": err}))
 
 
-@app.route("/spotify/pause")
+@app.route("/spotify/pause", methods=["GET", "POST"])
+@limiter.limit("20/minute")
 def route_sp_pause():
     ok, err = SP.sp_pause()
-    return jsonify({"ok": ok, "error": err})
+    return _maybe_deprecate(jsonify({"ok": ok, "error": err}))
 
 
-@app.route("/spotify/next")
+@app.route("/spotify/next", methods=["GET", "POST"])
+@limiter.limit("20/minute")
 def route_sp_next():
     ok, err = SP.sp_next()
-    return jsonify({"ok": ok, "error": err})
+    return _maybe_deprecate(jsonify({"ok": ok, "error": err}))
 
 
-@app.route("/spotify/prev")
+@app.route("/spotify/prev", methods=["GET", "POST"])
+@limiter.limit("20/minute")
 def route_sp_prev():
     ok, err = SP.sp_prev()
-    return jsonify({"ok": ok, "error": err})
+    return _maybe_deprecate(jsonify({"ok": ok, "error": err}))
 
 
-@app.route("/spotify/volume/<int:pct>")
+@app.route("/spotify/volume/<int:pct>", methods=["GET", "POST"])
+@limiter.limit("20/minute")
 def route_sp_volume(pct):
     ok, err = SP.sp_volume(pct)
-    return jsonify({"ok": ok, "volume": pct, "error": err})
+    return _maybe_deprecate(jsonify({"ok": ok, "volume": pct, "error": err}))
 
 
-@app.route("/spotify/shuffle/<state>")
+@app.route("/spotify/shuffle/<state>", methods=["GET", "POST"])
+@limiter.limit("20/minute")
 def route_sp_shuffle(state):
     if state not in ("on", "off"):
         return jsonify({"error": "state must be on or off"}), 400
     ok, err = SP.sp_shuffle(state == "on")
-    return jsonify({"ok": ok, "shuffle": state, "error": err})
+    return _maybe_deprecate(jsonify({"ok": ok, "shuffle": state, "error": err}))
 
 
-@app.route("/spotify/repeat/<mode>")
+@app.route("/spotify/repeat/<mode>", methods=["GET", "POST"])
+@limiter.limit("20/minute")
 def route_sp_repeat(mode):
     ok, err = SP.sp_repeat(mode)
-    return jsonify({"ok": ok, "repeat": mode, "error": err})
+    return _maybe_deprecate(jsonify({"ok": ok, "repeat": mode, "error": err}))
 
 
 @app.route("/spotify/search/<path:query>")
+@limiter.limit("20/minute")
 def route_sp_search(query):
     limit = int(request.args.get("limit", 5))
     data, err = SP.sp_search(query, limit=limit)
@@ -456,27 +527,32 @@ def route_sp_search(query):
     return jsonify(data)
 
 
-@app.route("/spotify/beat-sync/on")
+@app.route("/spotify/beat-sync/on", methods=["GET", "POST"])
+@limiter.limit("20/minute")
 def route_bs_on():
-    return jsonify(BS.bs_start())
+    return _maybe_deprecate(jsonify(BS.bs_start()))
 
 
-@app.route("/spotify/beat-sync/off")
+@app.route("/spotify/beat-sync/off", methods=["GET", "POST"])
+@limiter.limit("20/minute")
 def route_bs_off():
-    return jsonify(BS.bs_stop())
+    return _maybe_deprecate(jsonify(BS.bs_stop()))
 
 
 @app.route("/spotify/beat-sync/status")
+@limiter.limit("20/minute")
 def route_bs_status():
     return jsonify(BS.bs_status())
 
 
-@app.route("/spotify/beat-sync/bpm/<int:bpm>")
+@app.route("/spotify/beat-sync/bpm/<int:bpm>", methods=["GET", "POST"])
+@limiter.limit("20/minute")
 def route_bs_bpm(bpm):
-    return jsonify(BS.bs_set_bpm(bpm))
+    return _maybe_deprecate(jsonify(BS.bs_set_bpm(bpm)))
 
 
 @app.route("/spotify/devices")
+@limiter.limit("20/minute")
 def route_sp_devices():
     return jsonify(SP.sp_devices())
 
@@ -546,6 +622,7 @@ def _trigger_tag(uid: str) -> tuple[int, dict]:
 # ---------------------------------------------------------------------------
 
 @app.route("/nfc/scan", methods=["POST"])
+@limiter.limit("5/minute")
 def route_nfc_scan():
     """iOS Shortcuts calls POST /nfc/scan with {"uid": "<NFC Tag Identifier>"}."""
     body = request.get_json(silent=True) or {}
@@ -557,6 +634,7 @@ def route_nfc_scan():
 
 
 @app.route("/nfc/register", methods=["POST"])
+@limiter.limit("5/minute")
 def route_nfc_register():
     """Register a tag — POST {"uid": "...", "scene": "movie"}."""
     body  = request.get_json(silent=True) or {}
@@ -573,6 +651,7 @@ def route_nfc_register():
 
 
 @app.route("/nfc/tags")
+@limiter.limit("5/minute")
 def route_nfc_tags():
     return jsonify({"tags": _load_tags(), "scenes": list(_load_scenes().keys())})
 
@@ -582,6 +661,7 @@ def route_nfc_tags():
 # ---------------------------------------------------------------------------
 
 @app.route("/tag/<uid>")
+@limiter.limit("5/minute")
 def route_tag(uid):
     status, data = _trigger_tag(uid)
     if not data.get("registered", True) and not data.get("triggered"):
@@ -591,6 +671,7 @@ def route_tag(uid):
 
 
 @app.route("/tag/<uid>/<scene>", methods=["GET", "POST"])
+@limiter.limit("5/minute")
 def route_tag_register(uid, scene):
     uid    = _normalize_uid(uid)
     scenes = _load_scenes()
@@ -601,6 +682,7 @@ def route_tag_register(uid, scene):
 
 
 @app.route("/tags")
+@limiter.limit("5/minute")
 def route_tags():
     return jsonify({"tags": _load_tags(), "scenes": list(_load_scenes().keys())})
 

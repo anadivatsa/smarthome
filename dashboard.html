@@ -154,6 +154,92 @@ input[type=range]::-webkit-slider-thumb {
 /* Divider */
 hr { border: none; border-top: 1px solid var(--border); margin: 4px 0 16px; }
 
+/* ── Memory panel ────────────────────────────────────────────────────── */
+
+/* Scrollbar styling (dark theme) */
+.mem-scroll::-webkit-scrollbar { width: 4px; }
+.mem-scroll::-webkit-scrollbar-track { background: transparent; }
+.mem-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.mem-section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); margin-bottom: 10px; }
+
+/* Scene timeline */
+.scene-timeline { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow-y: auto; }
+.scene-timeline.mem-scroll { }
+.timeline-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.timeline-time { font-size: 12px; font-weight: 600; color: var(--muted); flex-shrink: 0; width: 38px; font-variant-numeric: tabular-nums; }
+.timeline-scene { font-size: 13px; font-weight: 500; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badge {
+  font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 10px;
+  text-transform: uppercase; letter-spacing: 0.3px; flex-shrink: 0;
+}
+.badge-nfc      { background: #1e3a5f; color: #60a5fa; }
+.badge-telegram { background: #2d1f47; color: #a78bfa; }
+.badge-siri     { background: #0f3321; color: #34d399; }
+.badge-api      { background: #222; color: var(--muted); border: 1px solid var(--border); }
+
+/* Diary card */
+.diary-card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 14px;
+}
+.diary-date { font-size: 12px; font-weight: 700; margin-bottom: 10px; }
+.diary-body {
+  font-size: 13px; line-height: 1.7; color: var(--text);
+  max-height: 220px; overflow-y: auto;
+}
+.diary-footer { font-size: 11px; color: var(--muted); margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; }
+
+/* Memory search */
+.mem-search-row { display: flex; gap: 8px; margin-bottom: 10px; }
+.mem-search-input {
+  flex: 1; background: #111; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text); font-size: 13px;
+  padding: 10px 12px; outline: none; min-width: 0;
+}
+.mem-search-input:focus { border-color: var(--accent); }
+.mem-search-btn {
+  background: var(--accent); border: none; border-radius: var(--radius-sm);
+  color: #fff; font-size: 13px; font-weight: 600; padding: 10px 14px;
+  cursor: pointer; flex-shrink: 0; -webkit-tap-highlight-color: transparent;
+}
+.mem-search-btn:active { background: var(--accent2); }
+.mem-results { display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow-y: auto; }
+.mem-result-card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 10px 12px;
+}
+.mem-result-meta { font-size: 10px; color: var(--muted); margin-bottom: 5px; }
+.mem-result-content { font-size: 12px; line-height: 1.55; }
+.mem-empty { font-size: 13px; color: var(--muted); text-align: center; padding: 22px 0; }
+
+/* Memory panel wrapper */
+.memory-panel { padding: 0 16px 60px; }
+
+/* Desktop: break out to full viewport width, 3-column grid */
+@media (min-width: 768px) {
+  .memory-panel {
+    width: 100vw;
+    margin-left: calc(-50vw + 50%);
+    padding: 0 32px 60px;
+    box-sizing: border-box;
+  }
+  .memory-grid {
+    max-width: 1100px; margin: 0 auto;
+    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 24px; align-items: start;
+  }
+  html { overflow-x: hidden; } /* prevent 100vw scrollbar */
+}
+
+/* Mobile: stacked */
+@media (max-width: 767px) {
+  .memory-grid { display: flex; flex-direction: column; gap: 24px; }
+}
+
 /* Key modal */
 #keyOverlay {
   display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85);
@@ -304,6 +390,45 @@ hr { border: none; border-top: 1px solid var(--border); margin: 4px 0 16px; }
   </div>
 </div>
 
+<!-- ── Memory panel ──────────────────────────────────────────────────── -->
+<hr style="margin: 4px 16px 20px;">
+<div class="memory-panel">
+  <div class="section-title" style="margin-bottom:16px">Memory</div>
+  <div class="memory-grid">
+
+    <!-- Section 1: Today's Scenes -->
+    <div>
+      <div class="mem-section-title">Today's Scenes</div>
+      <div class="scene-timeline mem-scroll" id="sceneTimeline">
+        <div class="mem-empty">Loading…</div>
+      </div>
+    </div>
+
+    <!-- Section 2: Latest Diary -->
+    <div>
+      <div class="mem-section-title">Latest Diary</div>
+      <div id="diaryContent">
+        <div class="mem-empty">Loading…</div>
+      </div>
+    </div>
+
+    <!-- Section 3: Memory Search -->
+    <div>
+      <div class="mem-section-title">Memory Search</div>
+      <div class="mem-search-row">
+        <input id="memSearchInput" class="mem-search-input" type="text"
+               placeholder="Search memories…"
+               onkeydown="if(event.key==='Enter') searchMemory()">
+        <button class="mem-search-btn" onclick="searchMemory()">Search</button>
+      </div>
+      <div class="mem-results mem-scroll" id="memResults">
+        <div class="mem-empty">Enter a query to search.</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script>
@@ -345,6 +470,7 @@ async function submitKey() {
     setKey(key);
     hideKeyModal();
     refreshStatus();
+    loadMemoryPanel();
   } catch(e) {
     document.getElementById('keyError').textContent = 'Could not reach hub.';
   }
@@ -358,8 +484,9 @@ function resetKey() {
 // Submit on Enter
 document.getElementById('keyInput').addEventListener('keydown', e => { if (e.key === 'Enter') submitKey(); });
 
-// On load: show modal if no key stored
+// On load: show modal if no key stored, else load everything
 if (!getKey()) showKeyModal();
+else loadMemoryPanel();
 
 // ---------------------------------------------------------------------------
 // Hub fetch helper — handles 401 by re-prompting
@@ -544,6 +671,117 @@ function toast(msg) {
 // Poll every 4s
 refreshStatus();
 setInterval(refreshStatus, 4000);
+
+// ---------------------------------------------------------------------------
+// Memory panel
+// ---------------------------------------------------------------------------
+
+function _esc(s) {
+  return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function _badgeClass(by) {
+  return { nfc: 'badge-nfc', telegram: 'badge-telegram', siri: 'badge-siri' }[by] || 'badge-api';
+}
+
+function _todayStr() {
+  const d = new Date();
+  return d.getFullYear() + '-' +
+    String(d.getMonth() + 1).padStart(2, '0') + '-' +
+    String(d.getDate()).padStart(2, '0');
+}
+
+async function loadSceneLog() {
+  const el = document.getElementById('sceneTimeline');
+  try {
+    const r = await hubFetch('/api/scene_log?n=50');
+    const d = await r.json();
+    const today = _todayStr();
+    const items = (d.log || []).filter(e => e.timestamp && e.timestamp.startsWith(today));
+    if (!items.length) {
+      el.innerHTML = '<div class="mem-empty">No scenes today yet.</div>';
+      return;
+    }
+    el.innerHTML = items.map(e => {
+      const time = (e.timestamp || '').substring(11, 16);
+      const by   = e.triggered_by || 'api';
+      return `<div class="timeline-row">
+        <span class="timeline-time">${_esc(time)}</span>
+        <span class="timeline-scene">${_esc(e.scene)}</span>
+        <span class="badge ${_badgeClass(by)}">${_esc(by)}</span>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    if (e.message !== '401')
+      el.innerHTML = '<div class="mem-empty">No scenes today yet.</div>';
+  }
+}
+
+async function loadDiary() {
+  const el = document.getElementById('diaryContent');
+  try {
+    const r = await hubFetch('/api/diary?n=1');
+    const d = await r.json();
+    const entries = d.entries || [];
+    if (!entries.length) {
+      el.innerHTML = '<div class="diary-card"><div class="mem-empty">No diary entry found.</div></div>';
+      return;
+    }
+    const entry = entries[0];
+    let dateDisplay = entry.date || '';
+    try {
+      const dt = new Date(entry.date + 'T12:00:00');
+      dateDisplay = dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+    } catch(_) {}
+    const ts = (entry.timestamp || '').substring(0, 16);
+    el.innerHTML = `<div class="diary-card">
+      <div class="diary-date">📓 Neo's Diary — ${_esc(dateDisplay)}</div>
+      <div class="diary-body mem-scroll">${_esc(entry.content).replace(/\n/g, '<br>')}</div>
+      <div class="diary-footer">Generated at ${_esc(ts)}</div>
+    </div>`;
+  } catch(e) {
+    if (e.message !== '401')
+      el.innerHTML = '<div class="diary-card"><div class="mem-empty">No diary entry found.</div></div>';
+  }
+}
+
+async function searchMemory() {
+  const q   = document.getElementById('memSearchInput').value.trim();
+  const el  = document.getElementById('memResults');
+  if (!q) return;
+  el.innerHTML = '<div class="mem-empty">Searching…</div>';
+  try {
+    const r = await hubFetch('/api/memory?q=' + encodeURIComponent(q) + '&n=5');
+    const d = await r.json();
+    const results = d.results || [];
+    if (!results.length) {
+      el.innerHTML = '<div class="mem-empty">No results.</div>';
+      return;
+    }
+    el.innerHTML = results.map(m => {
+      const src     = _esc((m.source || '').replace('neo_diary_', '📓 '));
+      const ts      = _esc((m.timestamp || '').substring(0, 16));
+      const content = m.content || '';
+      const snippet = _esc(content.substring(0, 200)) + (content.length > 200 ? '…' : '');
+      return `<div class="mem-result-card">
+        <div class="mem-result-meta">${src} · ${ts}</div>
+        <div class="mem-result-content">${snippet}</div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    if (e.message !== '401')
+      el.innerHTML = '<div class="mem-empty">No results.</div>';
+  }
+}
+
+function loadMemoryPanel() {
+  if (!getKey()) return;
+  loadSceneLog();
+  loadDiary();
+}
+
+// Auto-refresh scene log every 60s
+setInterval(() => { if (getKey()) loadSceneLog(); }, 60000);
 </script>
 </body>
 </html>

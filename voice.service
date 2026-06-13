@@ -1,19 +1,19 @@
 [Unit]
-Description=Smart Home Hub
-After=network-online.target wiz-lamp.service
+Description=Smart Home Voice Intelligence
+After=network-online.target hub.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=anadivatsa
 WorkingDirectory=/home/anadivatsa/smarthome
-ExecStart=/home/anadivatsa/smarthome/venv/bin/python hub.py
+ExecStart=/home/anadivatsa/smarthome/venv/bin/python voice.py
 Restart=on-failure
-RestartSec=5
+RestartSec=10
+EnvironmentFile=/home/anadivatsa/smarthome/voice.env
 StandardOutput=journal
 StandardError=journal
 Environment=PYTHONUNBUFFERED=1
-Environment=TV_IP=192.168.1.2
 
 [Install]
 WantedBy=multi-user.target

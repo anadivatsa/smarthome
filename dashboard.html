@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Neo</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0d0d0d;
+  --card: #1a1a1a;
+  --card2: #222;
+  --border: #2a2a2a;
+  --accent: #7c3aed;
+  --accent2: #6d28d9;
+  --green: #10b981;
+  --red: #ef4444;
+  --yellow: #f59e0b;
+  --text: #f0f0f0;
+  --muted: #888;
+  --radius: 14px;
+  --radius-sm: 10px;
+}
+
+html, body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; min-height: 100vh; }
+
+body { max-width: 480px; margin: 0 auto; padding: 0 0 40px; }
+
+/* Header */
+.header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 16px 8px;
+  position: sticky; top: 0; z-index: 10;
+  background: linear-gradient(to bottom, #0d0d0d 80%, transparent);
+}
+.header h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
+.presence-pill {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 20px; padding: 5px 12px; font-size: 13px; font-weight: 500;
+  cursor: pointer; transition: background 0.15s;
+}
+.presence-pill .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--muted); transition: background 0.3s;
+}
+.presence-pill.home .dot { background: var(--green); }
+.presence-pill.away .dot { background: var(--yellow); }
+
+/* Status bar */
+.status-bar {
+  display: grid; grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px; padding: 8px 16px 16px;
+}
+.status-card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 3px; overflow: hidden;
+}
+.status-card .label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
+.status-card .val { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.status-card .sub { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.status-card.on .val { color: var(--green); }
+.status-card.off .val { color: var(--muted); }
+
+/* Section */
+.section { padding: 0 16px 20px; }
+.section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); margin-bottom: 10px; }
+
+/* Scenes grid */
+.scenes-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+}
+.scene-btn {
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 14px 8px; display: flex; flex-direction: column; align-items: center; gap: 6px;
+  cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
+  transition: background 0.12s, transform 0.1s, border-color 0.12s;
+  -webkit-touch-callout: none;
+}
+.scene-btn:active { transform: scale(0.94); background: var(--card2); }
+.scene-btn.active { border-color: var(--accent); background: #1e1533; }
+.scene-btn.loading { opacity: 0.6; pointer-events: none; }
+.scene-btn .icon { font-size: 22px; }
+.scene-btn .name { font-size: 11px; font-weight: 500; color: var(--muted); text-align: center; line-height: 1.2; }
+
+/* Control rows */
+.ctrl-row { display: flex; gap: 8px; margin-bottom: 8px; }
+.ctrl-btn {
+  flex: 1; background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 13px 8px;
+  font-size: 13px; font-weight: 600; color: var(--text); cursor: pointer;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  -webkit-tap-highlight-color: transparent; user-select: none;
+  transition: background 0.12s, transform 0.1s;
+}
+.ctrl-btn:active { transform: scale(0.96); background: var(--card2); }
+.ctrl-btn.primary { background: var(--accent); border-color: var(--accent2); }
+.ctrl-btn.primary:active { background: var(--accent2); }
+.ctrl-btn.danger { background: #3b0f0f; border-color: #7f1d1d; }
+.ctrl-btn.icon-only { flex: 0 0 52px; font-size: 18px; }
+
+/* Slider row */
+.slider-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.slider-row .slabel { font-size: 12px; color: var(--muted); flex-shrink: 0; }
+input[type=range] {
+  flex: 1; -webkit-appearance: none; appearance: none;
+  height: 5px; background: var(--border); border-radius: 3px; outline: none;
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 22px; height: 22px;
+  border-radius: 50%; background: var(--accent); cursor: pointer;
+  box-shadow: 0 0 0 3px #1a1a1a;
+}
+
+/* Spotify track */
+.spotify-track {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 12px 14px;
+  display: flex; align-items: center; gap: 12px; margin-bottom: 8px;
+}
+.spotify-track .sp-icon { font-size: 22px; flex-shrink: 0; }
+.spotify-track .sp-info { overflow: hidden; }
+.spotify-track .sp-track { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.spotify-track .sp-artist { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.spotify-track .sp-idle { font-size: 13px; color: var(--muted); }
+
+/* Effects grid */
+.effects-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.effect-btn {
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 10px 4px; display: flex; flex-direction: column; align-items: center; gap: 4px;
+  cursor: pointer; -webkit-tap-highlight-color: transparent; user-select: none;
+  transition: background 0.12s, transform 0.1s;
+}
+.effect-btn:active { transform: scale(0.94); background: var(--card2); }
+.effect-btn.active { border-color: var(--accent); background: #1e1533; }
+.effect-btn .icon { font-size: 18px; }
+.effect-btn .name { font-size: 10px; color: var(--muted); }
+
+/* Toast */
+#toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px);
+  background: #333; color: #fff; border-radius: 20px; padding: 9px 18px;
+  font-size: 13px; font-weight: 500; pointer-events: none; z-index: 100;
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.25s;
+  white-space: nowrap; opacity: 0;
+}
+#toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+
+/* Divider */
+hr { border: none; border-top: 1px solid var(--border); margin: 4px 0 16px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>⚡ Neo</h1>
+  <div class="presence-pill" id="presencePill" onclick="togglePresence()">
+    <div class="dot"></div>
+    <span id="presenceLabel">—</span>
+  </div>
+</div>
+
+<div class="status-bar">
+  <div class="status-card" id="lampCard">
+    <div class="label">Lamp</div>
+    <div class="val" id="lampVal">—</div>
+    <div class="sub" id="lampSub">—</div>
+  </div>
+  <div class="status-card" id="tvCard">
+    <div class="label">TV</div>
+    <div class="val" id="tvVal">—</div>
+    <div class="sub" id="tvSub">&nbsp;</div>
+  </div>
+  <div class="status-card" id="spCard">
+    <div class="label">Spotify</div>
+    <div class="val" id="spVal">—</div>
+    <div class="sub" id="spSub">&nbsp;</div>
+  </div>
+</div>
+
+<!-- Scenes -->
+<div class="section">
+  <div class="section-title">Scenes</div>
+  <div class="scenes-grid" id="scenesGrid"></div>
+</div>
+
+<!-- Lamp -->
+<div class="section">
+  <div class="section-title">Lamp</div>
+  <div class="ctrl-row">
+    <button class="ctrl-btn primary" onclick="lamp('on')">💡 On</button>
+    <button class="ctrl-btn danger" onclick="lamp('off')">Off</button>
+  </div>
+  <div class="slider-row">
+    <span class="slabel">Dim</span>
+    <input type="range" id="brightnessSlider" min="1" max="100" value="60"
+           oninput="document.getElementById('brightnessVal').textContent=this.value+'%'"
+           onchange="lamp('brightness/'+this.value)">
+    <span class="slabel" id="brightnessVal">60%</span>
+  </div>
+  <div class="section-title" style="margin-top:10px">Effects</div>
+  <div class="effects-grid">
+    <div class="effect-btn" onclick="lamp('disco')"><div class="icon">🪩</div><div class="name">Disco</div></div>
+    <div class="effect-btn" onclick="lamp('aurora')"><div class="icon">🌌</div><div class="name">Aurora</div></div>
+    <div class="effect-btn" onclick="lamp('party')"><div class="icon">🎉</div><div class="name">Party</div></div>
+    <div class="effect-btn" onclick="lamp('pulse')"><div class="icon">💜</div><div class="name">Pulse</div></div>
+    <div class="effect-btn" onclick="lamp('candle')"><div class="icon">🕯️</div><div class="name">Candle</div></div>
+    <div class="effect-btn" onclick="lamp('campfire')"><div class="icon">🔥</div><div class="name">Campfire</div></div>
+    <div class="effect-btn" onclick="lamp('strobe')"><div class="icon">⚡</div><div class="name">Strobe</div></div>
+    <div class="effect-btn" onclick="lamp('alert')"><div class="icon">🚨</div><div class="name">Alert</div></div>
+  </div>
+</div>
+
+<!-- TV -->
+<div class="section">
+  <div class="section-title">TV</div>
+  <div class="ctrl-row">
+    <button class="ctrl-btn primary" onclick="tv('on')">📺 On</button>
+    <button class="ctrl-btn danger" onclick="tv('off')">Off</button>
+  </div>
+  <div class="ctrl-row">
+    <button class="ctrl-btn icon-only" onclick="tv('prev')">⏮</button>
+    <button class="ctrl-btn icon-only" onclick="tv('play')">▶️</button>
+    <button class="ctrl-btn icon-only" onclick="tv('pause')">⏸</button>
+    <button class="ctrl-btn icon-only" onclick="tv('stop')">⏹</button>
+    <button class="ctrl-btn icon-only" onclick="tv('next')">⏭</button>
+  </div>
+  <div class="ctrl-row">
+    <button class="ctrl-btn" onclick="tv('volume/-5')">🔉 Vol −</button>
+    <button class="ctrl-btn" onclick="tv('mute')">🔇 Mute</button>
+    <button class="ctrl-btn" onclick="tv('volume/5')">🔊 Vol +</button>
+  </div>
+  <div class="ctrl-row">
+    <button class="ctrl-btn" onclick="tv('app/netflix')">Netflix</button>
+    <button class="ctrl-btn" onclick="tv('app/youtube')">YouTube</button>
+    <button class="ctrl-btn" onclick="tv('app/spotify')">Spotify</button>
+  </div>
+</div>
+
+<!-- Spotify -->
+<div class="section">
+  <div class="section-title">Spotify</div>
+  <div class="spotify-track" id="spotifyTrack">
+    <div class="sp-icon">🎵</div>
+    <div class="sp-info"><div class="sp-idle">Not playing</div></div>
+  </div>
+  <div class="ctrl-row">
+    <button class="ctrl-btn icon-only" onclick="sp('prev')">⏮</button>
+    <button class="ctrl-btn primary" onclick="sp('play')" id="spPlayBtn">▶️</button>
+    <button class="ctrl-btn icon-only" onclick="sp('pause')" id="spPauseBtn">⏸</button>
+    <button class="ctrl-btn icon-only" onclick="sp('next')">⏭</button>
+  </div>
+  <div class="slider-row">
+    <span class="slabel">🔉</span>
+    <input type="range" id="spVolSlider" min="0" max="100" value="50"
+           oninput="document.getElementById('spVolVal').textContent=this.value+'%'"
+           onchange="fetch('/spotify/volume/'+this.value)">
+    <span class="slabel" id="spVolVal">50%</span>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const SCENES = [
+  { name:'movie',    icon:'🎬', label:'Movie'     },
+  { name:'netflix',  icon:'📺', label:'Netflix'   },
+  { name:'youtube',  icon:'▶️', label:'YouTube'  },
+  { name:'focus',    icon:'🎯', label:'Focus'     },
+  { name:'relax',    icon:'😌', label:'Relax'     },
+  { name:'morning',  icon:'☀️', label:'Morning'  },
+  { name:'dinner',   icon:'🍽️', label:'Dinner'  },
+  { name:'gaming',   icon:'🎮', label:'Gaming'    },
+  { name:'romance',  icon:'💕', label:'Romance'   },
+  { name:'reading',  icon:'📖', label:'Reading'   },
+  { name:'party',    icon:'🎉', label:'Party'     },
+  { name:'music',    icon:'🎶', label:'Music'     },
+  { name:'goodnight',icon:'🌙', label:'Night'     },
+  { name:'thunderstruck',icon:'⚡',label:'⚡ AC/DC'},
+  { name:'leave',    icon:'🚪', label:'Leave'     },
+  { name:'off',      icon:'⚫', label:'Off'       },
+];
+
+// Build scenes grid
+const grid = document.getElementById('scenesGrid');
+SCENES.forEach(s => {
+  const btn = document.createElement('div');
+  btn.className = 'scene-btn';
+  btn.id = 'scene-' + s.name;
+  btn.innerHTML = `<div class="icon">${s.icon}</div><div class="name">${s.label}</div>`;
+  btn.addEventListener('click', () => runScene(s.name, btn));
+  grid.appendChild(btn);
+});
+
+let activeScene = null;
+
+async function runScene(name, btn) {
+  if (btn.classList.contains('loading')) return;
+  btn.classList.add('loading');
+  if (activeScene) document.getElementById('scene-' + activeScene)?.classList.remove('active');
+  try {
+    const r = await fetch('/scene/' + name);
+    const d = await r.json();
+    activeScene = name;
+    btn.classList.add('active');
+    toast('Scene: ' + name);
+    refreshStatus();
+  } catch(e) { toast('Error running scene'); }
+  finally { btn.classList.remove('loading'); }
+}
+
+async function lamp(ep) {
+  try {
+    await fetch('/lamp/' + ep);
+    toast('Lamp: ' + ep);
+    setTimeout(refreshStatus, 400);
+  } catch(e) { toast('Lamp error'); }
+}
+
+async function tv(ep) {
+  try {
+    await fetch('/tv/' + ep);
+    toast('TV: ' + ep.replace('app/', '').replace('volume/', 'vol '));
+    setTimeout(refreshStatus, 800);
+  } catch(e) { toast('TV error'); }
+}
+
+async function sp(ep) {
+  try {
+    await fetch('/spotify/' + ep);
+    setTimeout(refreshStatus, 600);
+  } catch(e) { toast('Spotify error'); }
+}
+
+async function togglePresence() {
+  const pill = document.getElementById('presencePill');
+  const current = pill.classList.contains('home') ? 'home' : 'away';
+  const next = current === 'home' ? 'away' : 'home';
+  try {
+    await fetch('/presence', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({state: next}) });
+    updatePresence({state: next});
+    toast('Presence: ' + next);
+  } catch(e) {}
+}
+
+function updatePresence(data) {
+  const pill = document.getElementById('presencePill');
+  const label = document.getElementById('presenceLabel');
+  pill.className = 'presence-pill ' + (data.state || '');
+  label.textContent = data.state === 'home' ? 'Home' : data.state === 'away' ? 'Away' : '—';
+}
+
+async function refreshStatus() {
+  const [lamp, tv, sp, pres] = await Promise.allSettled([
+    fetch('/lamp/status').then(r => r.json()),
+    fetch('/tv/status').then(r => r.json()),
+    fetch('/spotify/status').then(r => r.json()),
+    fetch('/presence').then(r => r.json()),
+  ]);
+
+  // Lamp
+  if (lamp.status === 'fulfilled') {
+    const d = lamp.value;
+    const lampCard = document.getElementById('lampCard');
+    const on = d.on;
+    lampCard.className = 'status-card ' + (on ? 'on' : 'off');
+    document.getElementById('lampVal').textContent = on ? (d.effect || 'On') : 'Off';
+    document.getElementById('lampSub').textContent = on
+      ? (d.brightness_pct != null ? d.brightness_pct + '%' + (d.colortemp_k ? ' · ' + d.colortemp_k + 'K' : '') : '—')
+      : '—';
+    if (on && d.brightness_pct != null) {
+      const sl = document.getElementById('brightnessSlider');
+      sl.value = d.brightness_pct;
+      document.getElementById('brightnessVal').textContent = d.brightness_pct + '%';
+    }
+  }
+
+  // TV
+  if (tv.status === 'fulfilled') {
+    const d = tv.value;
+    const tvCard = document.getElementById('tvCard');
+    const on = d.on ?? d.power_state === 'on';
+    tvCard.className = 'status-card ' + (on ? 'on' : 'off');
+    document.getElementById('tvVal').textContent = on ? 'On' : 'Off';
+  }
+
+  // Spotify
+  if (sp.status === 'fulfilled') {
+    const d = sp.value;
+    const playing = d.is_playing ?? d.playing;
+    const track = d.track_name ?? d.item?.name;
+    const artist = d.artist_name ?? (d.item?.artists||[]).map(a=>a.name).join(', ');
+    const volume = d.volume_percent ?? d.volume;
+    const spCard = document.getElementById('spCard');
+    spCard.className = 'status-card ' + (playing ? 'on' : '');
+    document.getElementById('spVal').textContent = track ? track.substring(0, 18) : (playing ? 'Playing' : 'Off');
+    document.getElementById('spSub').textContent = artist ? artist.substring(0, 20) : ' ';
+
+    const trackEl = document.getElementById('spotifyTrack');
+    if (track) {
+      trackEl.innerHTML = `<div class="sp-icon">${playing ? '🎵' : '⏸'}</div><div class="sp-info"><div class="sp-track">${track}</div><div class="sp-artist">${artist||''}</div></div>`;
+    } else {
+      trackEl.innerHTML = `<div class="sp-icon">🎵</div><div class="sp-info"><div class="sp-idle">Not playing</div></div>`;
+    }
+    if (volume != null) {
+      document.getElementById('spVolSlider').value = volume;
+      document.getElementById('spVolVal').textContent = volume + '%';
+    }
+  }
+
+  // Presence
+  if (pres.status === 'fulfilled') updatePresence(pres.value);
+}
+
+// Toast
+let toastTimer;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2000);
+}
+
+// Poll every 4s
+refreshStatus();
+setInterval(refreshStatus, 4000);
+</script>
+</body>
+</html>

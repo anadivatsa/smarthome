@@ -38,7 +38,7 @@ import time
 from pathlib import Path
 
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 
 import tv as TV
 import spotify as SP
@@ -58,8 +58,17 @@ PRESENCE_FILE = Path(__file__).parent / "presence.json"
 app = Flask(__name__)
 
 
+_scenes_cache: dict | None = None
+_scenes_mtime: float = 0.0
+
+
 def _load_scenes() -> dict:
-    return json.loads(SCENES_FILE.read_text())
+    global _scenes_cache, _scenes_mtime
+    mtime = SCENES_FILE.stat().st_mtime
+    if _scenes_cache is None or mtime != _scenes_mtime:
+        _scenes_cache = json.loads(SCENES_FILE.read_text())
+        _scenes_mtime = mtime
+    return _scenes_cache
 
 
 def _load_tags() -> dict:
@@ -91,7 +100,7 @@ def _set_presence(state: str):
 
 def _lamp(endpoint: str) -> tuple[bool, dict]:
     try:
-        r = requests.get(f"{LAMP_BASE}/{endpoint.lstrip('/')}", timeout=8)
+        r = requests.get(f"{LAMP_BASE}/{endpoint.lstrip('/')}", timeout=3)
         return True, r.json()
     except Exception as exc:
         return False, {"error": str(exc)}
@@ -645,6 +654,11 @@ def route_shortcuts():
 
 @app.route("/")
 def route_index():
+    return send_from_directory(Path(__file__).parent, "dashboard.html")
+
+
+@app.route("/api")
+def route_api():
     return jsonify({
         "service": "Smart Home Hub",
         "version": "1.1",

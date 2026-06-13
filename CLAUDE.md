@@ -1,24 +1,25 @@
 # Neo — Smart Home Hub (CLAUDE.md)
 
 > Drop this file gives any Claude Code session instant full context about the Neo smart home system.
-> Last updated: 2026-06-07 (tgvoice: /status command + scheduled tips)
+> Last updated: 2026-06-13 (Piper TTS + JBL audio output; TTS routes; voice.py crash noted)
 
 ---
 
 ## What This Is
 
-A Raspberry Pi (hostname **Neo**, IP **192.168.1.8**) runs a multi-service smart home automation hub 24/7. It controls a Samsung TV and a WiZ smart bulb through a central Flask HTTP API, with two voice intelligence layers: a local VAD pipeline (`voice.py`) and a Telegram bot (`tgvoice.py`) that accepts both text and voice messages via Whisper + Claude API.
+A Raspberry Pi (hostname **Neo**, IP **192.168.1.8**) runs a multi-service smart home automation hub 24/7. It controls a Samsung TV and a WiZ smart bulb through a central Flask HTTP API, with two voice intelligence layers: a local VAD pipeline (`voice.py`) and a Telegram bot (`tgvoice.py`) that accepts both text and voice messages via Whisper + Claude API. A JBL Flip 4 Bluetooth speaker is connected for TTS audio output via Piper (neural, offline).
 
 ---
 
 ## Hardware
 
-| Device | IP | Role |
+| Device | IP / MAC | Role |
 |---|---|---|
 | Raspberry Pi (Neo) | 192.168.1.8 | All services; runs 24/7 |
 | Samsung TV (Tizen) | 192.168.1.2 | WebSocket :8002 (keys) + REST :8001 (apps/status) |
 | WiZ smart bulb | 192.168.1.9 | UDP via pywizlight |
 | 3.5mm earphone mic | (USB audio) | Voice input for voice.service |
+| JBL Flip 4 | 6C:47:60:AA:21:DE | Bluetooth speaker — TTS audio output via Piper |
 
 ---
 
@@ -28,8 +29,9 @@ A Raspberry Pi (hostname **Neo**, IP **192.168.1.8**) runs a multi-service smart
 |---|---|---|---|
 | `hub.service` | `smarthome/hub.py` | 5001 | **active** |
 | `wiz-lamp.service` | `smarthome/wiz-lamp/app.py` | 5000 | **active** |
-| `voice.service` | `smarthome/voice.py` | — | **active** |
+| `voice.service` | `smarthome/voice.py` | — | **crash-looping** ⚠️ (mic device fix needed) |
 | `tgvoice.service` | `smarthome/tgvoice.py` | — | **active** |
+| `bt_jbl.service` | `/etc/systemd/system/bt_jbl.service` | — | **active** (auto-connects JBL on boot) |
 
 **Golden rule:** always call the hub (port 5001), never the lamp service directly. The hub proxies `/lamp/*` to port 5000, so scenes stay coordinated.
 
@@ -86,9 +88,15 @@ smarthome/
 ├── tgvoice.service       systemd unit for tgvoice.py
 ├── hub.service           systemd unit for hub.py
 ├── install.sh            Installs hub.service + venv
+├── tts.py                Piper TTS engine — speak() / speak_async() → JBL via PipeWire
+├── hub.env               JBL_MAC, JBL_NAME, TTS_ENABLED, TTS_MAX_WORDS
 ├── bt_pair.py            Headless Bluetooth pairing helper (manual, not integrated)
 ├── requirements.txt      Hub Python deps
 ├── venv/                 Python virtual environment (shared by all services)
+│
+├── piper/                Piper TTS binary + jenny-dioco voice (local only, gitignored)
+│   ├── piper/piper       Piper binary (aarch64)
+│   └── voices/en_GB-jenny_dioco-medium.onnx
 │
 └── wiz-lamp/
     ├── app.py            WiZ lamp Flask API (port 5000)
@@ -205,6 +213,26 @@ POST /presence  {"state": "home|away"}
 
 Currently: `away` (last updated 2026-06-03). Updated automatically by the `leave` scene.
 
+### TTS — `GET /tts/<endpoint>`
+
+```
+/tts/on      Enable TTS (writes TTS_ENABLED=true to hub.env, takes effect immediately)
+/tts/off     Disable TTS
+/tts/status  {"tts_enabled", "jbl_connected", "jbl_mac", "active_sink"}
+```
+
+TTS is **off by default**. Toggle without restarting hub — hub.env is read live on every call.
+
+### Announce — `POST /api/announce`
+
+```json
+{"text": "your message here", "device": "jbl"}
+```
+
+Speaks text via Piper (jenny-dioco) through JBL Flip 4. `device` defaults to `"jbl"`. Max 500 chars. Non-blocking — returns immediately while audio plays in background. Silently skipped if JBL is disconnected or TTS is disabled.
+
+Scene guard: speech suppressed automatically during `movie`, `netflix`, `goodnight`, `sleep`, `dnd` scenes.
+
 ### Shortcuts — `GET /shortcuts`
 
 Returns all scene/lamp/tv/spotify URLs pre-formatted for iOS Shortcuts setup.
@@ -262,6 +290,30 @@ Returns all scene/lamp/tv/spotify URLs pre-formatted for iOS Shortcuts setup.
 
 ---
 
+## TTS / Audio Output (`tts.py`)
+
+**Engine:** Piper TTS (offline neural) → `aplay` → PipeWire → JBL Flip 4 over Bluetooth.  
+**Voice:** `en_GB-jenny_dioco-medium` — warm British female, `--length-scale 1.1` (0.9× speed).  
+**Fallback:** espeak-ng (robotic, only if Piper binary missing).
+
+```
+POST /api/announce → tts.speak_async(text) → Piper → aplay → PipeWire → JBL
+```
+
+Key behaviours:
+- `TTS_ENABLED` and `TTS_MAX_WORDS` read live from `hub.env` — toggle takes effect instantly
+- JBL disconnected → silent skip, never crashes
+- Scene guard suppresses speech during: `movie`, `netflix`, `goodnight`, `sleep`, `dnd`
+- TTS is for **announcements and morning brief only** — scene activations do NOT speak
+- `set_current_scene()` is called on every scene change (for the guard), but no audio
+
+Piper binary and voice model are in `piper/` (gitignored, device-local). Install path:
+- Binary: `smarthome/piper/piper/piper`
+- Voice: `smarthome/piper/voices/en_GB-jenny_dioco-medium.onnx`
+- Libs: `LD_LIBRARY_PATH=smarthome/piper/piper`
+
+---
+
 ## Voice Pipeline (`voice.py`)
 
 ```
@@ -273,6 +325,8 @@ Returns all scene/lamp/tv/spotify URLs pre-formatted for iOS Shortcuts setup.
           → Claude API (claude-sonnet-4-20250514)
           → JSON parse → GET hub endpoints
 ```
+
+⚠️ **voice.service is crash-looping** (restart counter 442+). Root cause: `INPUT_DEVICE` is unset so PyAudio opens the system default input — which is the JBL Bluetooth mic (doesn't support mono ALSA capture). Fix: identify USB mic device index and set `INPUT_DEVICE=<n>` in `voice.env`. The USB mic is not appearing in `arecord -l` or PyAudio device list — needs investigation (may not be connected or may require a different ALSA config).
 
 Claude receives a system prompt built at startup from `scenes.json` + all hub routes. It responds with strict JSON only — no hardcoded phrase mapping anywhere.
 
@@ -334,6 +388,9 @@ Config: reads `voice.env` (ANTHROPIC_API_KEY, WHISPER_MODEL, CLAUDE_MODEL) and `
 | Voice pipeline uses no hardcoded phrases | Claude handles all intent — add new scenes to `scenes.json` and they're instantly reachable by voice |
 | Presence is manual (leave scene / NFC tag) | No automatic detection yet; BT presence is planned |
 | TV token saved to `~/.smarthome/tv_token.json` | Persists across service restarts; TV only prompts for pairing once |
+| TTS is announcements-only, not scene activations | Too noisy for daily use — scenes call `set_current_scene()` for the scene guard only |
+| JBL = output only; USB mic = input | JBL mic tested but too noisy/muffled for VAD; keep separation |
+| Piper is device-local, gitignored | 80MB binary + model; not appropriate for git; install script TBD |
 
 ---
 
@@ -343,17 +400,29 @@ Config: reads `voice.env` (ANTHROPIC_API_KEY, WHISPER_MODEL, CLAUDE_MODEL) and `
 - Hub + lamp service on systemd, always running
 - All scenes, TV control, Spotify, NFC tags, beat sync
 
-### Stage 2 — Voice Intelligence ✅ Done
+### Stage 2 — Voice Intelligence ✅ Done (pipeline built, service broken)
 - `voice.py`: WebRTC VAD → Whisper → Claude API → hub
 - System prompt auto-generated from `scenes.json` + all endpoints
-- `voice.service` active alongside `hub.service`
+- ⚠️ `voice.service` crash-looping — PyAudio opens JBL mic instead of USB mic (fix pending)
 
 ### Stage 3 — Telegram Text + Voice Control ✅ Done
 - `tgvoice.py`: Telegram bot accepts text commands and voice messages (OGG → Whisper → Claude → hub)
 - Same system prompt as `voice.py`; allowlisted to single chat ID
 - `tgvoice.service` active
 
-### Stage 4 — Bluetooth Presence Detection (Planned)
+### Stage 4 — JBL Audio Output ✅ Done
+- JBL Flip 4 paired and auto-connected via `bt_jbl.service`
+- Piper TTS (jenny-dioco, 0.9× speed) installed and working
+- `tts.py` with `/tts/on`, `/tts/off`, `/tts/status`, `POST /api/announce`
+- Scene guard suppresses speech during movie/sleep/dnd scenes
+
+### Stage 5 — Voice Layer Fix + Wake Word (Next)
+- Fix `voice.py` crash: identify correct USB mic device index, set `INPUT_DEVICE` in voice.env
+- Add "Hey Neo" wake word using `openWakeWord` (training scaffold already in `wakeword/`)
+- Consider ReSpeaker 4-mic USB array (~£20) for reliable room-scale pickup
+- TTS confirmation after voice commands ("Done, switching to movie mode")
+
+### Stage 6 — Bluetooth Presence Detection (Planned)
 - `bt_pair.py` exists (headless BT pairing helper) but is not wired up
 - Plan: scan for phone MAC via `bluetoothctl`/`hcitool`
 - Arrival → "welcome home" scene; departure → `leave` scene
@@ -399,6 +468,7 @@ python voice.py   # ANTHROPIC_API_KEY must be in environment or voice.env loaded
 | File | Contents | Committed? |
 |---|---|---|
 | `voice.env` | `ANTHROPIC_API_KEY`, model/VAD tuning | **No** (gitignored) |
+| `hub.env` | `JBL_MAC`, `JBL_NAME`, `TTS_ENABLED`, `TTS_MAX_WORDS`, `NEO_API_KEY` | **No** (gitignored) |
 | `spotify.env` | `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET` | No |
 | `notifier.env` | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | No |
 | `wiz-lamp/config.env` | `LAMP_IP=192.168.1.9` | No |

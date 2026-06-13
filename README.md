@@ -266,3 +266,70 @@ wiz-lamp/
 ├── wiz-lamp.service systemd unit for app.py
 └── install.sh      Installs and enables wiz-lamp.service
 ```
+
+---
+
+## Security
+
+### API key authentication
+
+All hub endpoints require a `NEO_API_KEY` unless the key is unset (open mode for initial setup). Set the key in `smarthome/hub.env`:
+
+```bash
+# Generate a strong key
+python3 -c "import secrets; print('NEO_API_KEY=' + secrets.token_urlsafe(32))" \
+  > /home/anadivatsa/smarthome/hub.env
+chmod 600 /home/anadivatsa/smarthome/hub.env
+sudo systemctl restart hub tgvoice voice
+```
+
+**Clients send the key via:**
+
+| Client | Method |
+|---|---|
+| curl / scripts | `X-Neo-Key: <key>` header |
+| Siri Shortcuts | Append `?key=<key>` to the URL |
+| NFC automations | Append `?key=<key>` to the URL |
+| Dashboard | Prompted on first visit; stored in `sessionStorage` |
+| tgvoice / voice | Auto-read from `hub.env` via systemd `EnvironmentFile` |
+
+**Public endpoints (never require a key):**
+
+- `GET /` — dashboard HTML
+- `GET /spotify/auth` — OAuth initiation
+- `GET /spotify/callback` — Spotify OAuth redirect
+- `GET /spotify/exchange` — Headless code exchange
+- `GET /shortcuts` — Siri Shortcuts reference page
+
+### Rotating the key
+
+```bash
+python3 -c "import secrets; print('NEO_API_KEY=' + secrets.token_urlsafe(32))" \
+  > /home/anadivatsa/smarthome/hub.env
+sudo systemctl restart hub tgvoice voice
+# Then update ?key= in all Siri Shortcuts and NFC automations
+```
+
+### GET → POST migration note
+
+All state-changing routes now accept both `GET` and `POST`. Existing Siri Shortcuts and NFC automations continue to work unchanged via GET. GET responses carry an `X-Deprecated` header as a reminder to migrate. To suppress the header, switch your client to `POST`.
+
+### Tailscale / network exposure warning
+
+The hub binds to `0.0.0.0:5001` — reachable by anything on your LAN. The API key protects against unauthorized control from other LAN devices, but the hub should **never be directly exposed to the internet** without an additional auth layer (Tailscale, Nginx + mTLS, or similar).
+
+If you access Neo remotely, use [Tailscale](https://tailscale.com/): install it on both the Pi and your phone, then access `http://100.x.x.x:5001` over the Tailscale private network. The API key remains required even over Tailscale.
+
+### Credential file locations
+
+| File | Contains | Gitignored |
+|---|---|---|
+| `smarthome/hub.env` | `NEO_API_KEY` | ✅ (`*.env`) |
+| `smarthome/voice.env` | `ANTHROPIC_API_KEY`, model config | ✅ |
+| `smarthome/spotify.env` | Spotify client ID/secret | ✅ |
+| `smarthome/notifier.env` | Telegram bot token + chat ID | ✅ |
+| `wiz-lamp/config.env` | Lamp IP | ✅ |
+| `~/.smarthome/tv_token.json` | Samsung TV pairing token | Outside repo |
+| `smarthome/spotify_tokens.json` | Spotify OAuth tokens | ✅ |
+
+See `.env.example` for a full template with all variable names.

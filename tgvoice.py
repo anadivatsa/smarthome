@@ -10,12 +10,16 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+
+import memory
+import backup
 
 # Env vars injected by systemd EnvironmentFile= (voice.env + notifier.env)
 BOT_TOKEN    = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -169,20 +173,28 @@ No-op (unclear or not a home-control request):
 _system_prompt = None
 
 
-def resolve_intent(transcript: str) -> list:
+def resolve_intent(transcript: str,
+                   history: list | None = None,
+                   mem_context: list | None = None) -> list:
     global _system_prompt
     if _system_prompt is None:
         _system_prompt = _build_system_prompt()
+
+    system = _system_prompt
+    if mem_context:
+        lines = "\n".join(f"- {m['content'][:300]}" for m in mem_context)
+        system += f"\n\nRelevant context from memory:\n{lines}"
+
+    messages = list(history or []) + [{"role": "user", "content": transcript}]
     raw = ""
     try:
         msg = _get_claude().messages.create(
             model=MODEL,
             max_tokens=256,
-            system=_system_prompt,
-            messages=[{"role": "user", "content": transcript}],
+            system=system,
+            messages=messages,
         )
         raw = msg.content[0].text.strip()
-        # Strip markdown code fences if Claude wraps the JSON
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -223,6 +235,13 @@ def dispatch(actions: list) -> list[str]:
             r = requests.get(url, headers=_hub_headers(), timeout=60)
             results.append(f"✓ {action}")
             log.debug("   HTTP %d", r.status_code)
+            # Log scene activations to memory
+            if action.startswith("/scene/"):
+                scene_name = action.split("/scene/", 1)[1].split("?")[0]
+                try:
+                    memory.store_scene_event(scene_name, "telegram")
+                except Exception:
+                    pass
         except Exception as exc:
             results.append(f"✗ {action} ({exc})")
             log.error("   dispatch failed: %s", exc)
@@ -332,6 +351,16 @@ async def send_tip(context: ContextTypes.DEFAULT_TYPE):
         log.error("Failed to send tip: %s", exc)
 
 
+def _memory_context(text: str) -> tuple[list, list]:
+    """Return (recent_history, relevant_memories) for enriching Claude calls."""
+    try:
+        history = memory.get_recent(15)
+        ctx     = memory.search(text, n=3)
+        return history, ctx
+    except Exception:
+        return [], []
+
+
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg or not _is_allowed(msg):
@@ -366,9 +395,19 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     log.info('Heard: "%s"', transcript)
-    actions = resolve_intent(transcript)
-    results = dispatch(actions)
-    await msg.reply_text(f'🗣 "{transcript}"\n' + "\n".join(results))
+    try:
+        memory.store_conversation("user", f"[voice] {transcript}")
+    except Exception:
+        pass
+    history, ctx = _memory_context(transcript)
+    actions  = resolve_intent(transcript, history=history, mem_context=ctx)
+    results  = dispatch(actions)
+    reply    = f'🗣 "{transcript}"\n' + "\n".join(results)
+    try:
+        memory.store_conversation("assistant", "\n".join(results))
+    except Exception:
+        pass
+    await msg.reply_text(reply)
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -381,9 +420,206 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     log.info('Text: "%s"', transcript)
-    actions = resolve_intent(transcript)
-    results = dispatch(actions)
-    await msg.reply_text(f'💬 "{transcript}"\n' + "\n".join(results))
+    try:
+        memory.store_conversation("user", transcript)
+    except Exception:
+        pass
+    history, ctx = _memory_context(transcript)
+    actions  = resolve_intent(transcript, history=history, mem_context=ctx)
+    results  = dispatch(actions)
+    reply    = f'💬 "{transcript}"\n' + "\n".join(results)
+    try:
+        memory.store_conversation("assistant", "\n".join(results))
+    except Exception:
+        pass
+    await msg.reply_text(reply)
+
+
+# ---------------------------------------------------------------------------
+# Memory commands
+# ---------------------------------------------------------------------------
+
+async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Search long-term memory: /memory <query>"""
+    msg = update.message
+    if not msg or not _is_allowed(msg):
+        return
+    query = " ".join(context.args or []).strip()
+    if not query:
+        await msg.reply_text("Usage: /memory <query>")
+        return
+    try:
+        results = memory.search(query, n=5)
+        if not results:
+            await msg.reply_text("No memories found.")
+            return
+        lines = [f"🔍 *Memory search: {query}*"]
+        for i, r in enumerate(results, 1):
+            ts = r.get("timestamp", "")[:16]
+            lines.append(f"{i}. [{ts}] {r['content'][:200]}")
+        await msg.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as exc:
+        await msg.reply_text(f"Memory search failed: {exc}")
+
+
+async def cmd_scene_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show last 10 scene activations: /scene_history"""
+    msg = update.message
+    if not msg or not _is_allowed(msg):
+        return
+    try:
+        log_entries = memory.get_scene_history(n=10)
+        if not log_entries:
+            await msg.reply_text("No scene history yet.")
+            return
+        lines = ["*Recent scene activations:*"]
+        for e in log_entries:
+            ts = e.get("timestamp", "")[:16]
+            lines.append(f"• `{e['scene']}` via {e['triggered_by']} at {ts}")
+        await msg.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as exc:
+        await msg.reply_text(f"Scene history failed: {exc}")
+
+
+async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear conversation history (not long-term memories): /forget"""
+    msg = update.message
+    if not msg or not _is_allowed(msg):
+        return
+    try:
+        c = memory._conn()
+        c.execute("DELETE FROM conversation")
+        c.commit()
+        await msg.reply_text("✅ Conversation history cleared. Long-term memories kept.")
+    except Exception as exc:
+        await msg.reply_text(f"Forget failed: {exc}")
+
+
+async def cmd_remember(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Store something as a long-term memory: /remember <text>"""
+    msg = update.message
+    if not msg or not _is_allowed(msg):
+        return
+    text = " ".join(context.args or []).strip()
+    if not text:
+        await msg.reply_text("Usage: /remember <text to remember>")
+        return
+    try:
+        mid = memory.store_memory(text, role="user", source="telegram_manual")
+        await msg.reply_text(f"✅ Stored as memory #{mid}.")
+    except Exception as exc:
+        await msg.reply_text(f"Remember failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# /repair — self-repair loop for scheduled tasks (Upgrade 5)
+# ---------------------------------------------------------------------------
+
+_TASKS_DIR = Path(__file__).parent / "tasks"
+# Pending repairs keyed by chat_id: {task_name, fixed_code, task_path}
+_pending_repairs: dict[int, dict] = {}
+
+
+async def cmd_repair(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/repair <task_name> — run task, fix errors with Claude, confirm before writing."""
+    msg = update.message
+    if not msg or not _is_allowed(msg):
+        return
+    task_name = " ".join(context.args or []).strip().rstrip(".py")
+    if not task_name:
+        await msg.reply_text("Usage: /repair <task_name>\nExample: /repair morning_brief")
+        return
+
+    task_path = _TASKS_DIR / f"{task_name}.py"
+    if not task_path.exists():
+        await msg.reply_text(f"Task not found: {task_path}")
+        return
+
+    await msg.reply_text(f"🔧 Running `{task_name}`…", parse_mode="Markdown")
+
+    result = subprocess.run(
+        [sys.executable, str(task_path)],
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode == 0:
+        await msg.reply_text(f"✅ `{task_name}` ran successfully.\n{result.stdout[:500]}", parse_mode="Markdown")
+        return
+
+    error_output = (result.stdout + result.stderr)[:1500]
+    file_contents = task_path.read_text()
+    await msg.reply_text(f"❌ Error:\n```\n{error_output[:800]}\n```\nAsking Claude for a fix…", parse_mode="Markdown")
+
+    prompt = (
+        f"This Python task failed with the following error. Read the file, "
+        f"identify the bug, and return ONLY the corrected Python code with "
+        f"no explanation:\n\nError:\n{error_output}\n\nFile contents:\n{file_contents}"
+    )
+    try:
+        claude_resp = _get_claude().messages.create(
+            model=MODEL,
+            max_tokens=2000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        fixed_code = claude_resp.content[0].text.strip()
+        if fixed_code.startswith("```"):
+            fixed_code = fixed_code.split("```")[1]
+            if fixed_code.startswith("python"):
+                fixed_code = fixed_code[6:]
+            fixed_code = fixed_code.strip()
+    except Exception as exc:
+        await msg.reply_text(f"Claude API error: {exc}")
+        return
+
+    _pending_repairs[msg.chat_id] = {
+        "task_name": task_name,
+        "task_path": task_path,
+        "fixed_code": fixed_code,
+    }
+    preview = fixed_code[:1200]
+    await msg.reply_text(
+        f"📝 Proposed fix:\n```python\n{preview}\n```\n\n"
+        f"Reply /confirm to apply and re-run, or /cancel to discard.",
+        parse_mode="Markdown",
+    )
+
+
+async def cmd_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/confirm — apply pending /repair fix and re-run the task."""
+    msg = update.message
+    if not msg or not _is_allowed(msg):
+        return
+    pending = _pending_repairs.pop(msg.chat_id, None)
+    if not pending:
+        await msg.reply_text("No pending repair. Use /repair <task_name> first.")
+        return
+
+    task_path  = pending["task_path"]
+    fixed_code = pending["fixed_code"]
+
+    bak = backup.backup_file(task_path)
+    task_path.write_text(fixed_code)
+    await msg.reply_text(f"✅ Fix applied (backup: `{bak.name if bak else 'none'}`). Re-running…", parse_mode="Markdown")
+
+    result = subprocess.run(
+        [sys.executable, str(task_path)],
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode == 0:
+        await msg.reply_text(f"✅ `{pending['task_name']}` now runs successfully!", parse_mode="Markdown")
+    else:
+        out = (result.stdout + result.stderr)[:800]
+        await msg.reply_text(f"❌ Still failing:\n```\n{out}\n```", parse_mode="Markdown")
+
+
+async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/cancel — discard pending /repair fix."""
+    msg = update.message
+    if not msg or not _is_allowed(msg):
+        return
+    if _pending_repairs.pop(msg.chat_id, None):
+        await msg.reply_text("🚫 Repair discarded. No files changed.")
+    else:
+        await msg.reply_text("Nothing pending.")
 
 
 # ---------------------------------------------------------------------------
@@ -396,6 +632,9 @@ def main():
     if not os.getenv("ANTHROPIC_API_KEY", "").strip():
         raise SystemExit("ANTHROPIC_API_KEY not set in voice.env")
 
+    memory.init()
+    log.info("Memory store initialised (DB: %s)", memory._DB_PATH)
+
     # Warm up Whisper at startup
     _load_whisper()
 
@@ -407,7 +646,14 @@ def main():
         .connect_timeout(30)
         .build()
     )
-    app.add_handler(CommandHandler("status", handle_status))
+    app.add_handler(CommandHandler("status",        handle_status))
+    app.add_handler(CommandHandler("memory",        cmd_memory))
+    app.add_handler(CommandHandler("scene_history", cmd_scene_history))
+    app.add_handler(CommandHandler("forget",        cmd_forget))
+    app.add_handler(CommandHandler("remember",      cmd_remember))
+    app.add_handler(CommandHandler("repair",        cmd_repair))
+    app.add_handler(CommandHandler("confirm",       cmd_confirm))
+    app.add_handler(CommandHandler("cancel",        cmd_cancel))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
@@ -415,7 +661,7 @@ def main():
         app.job_queue.run_repeating(send_tip, interval=7200, first=60)
         log.info("Tip scheduler active — every 2h, first in 60s")
 
-    log.info("Bot started — polling for voice messages (chat_id=%s)", ALLOWED_CHAT or "any")
+    log.info("Bot started — polling (chat_id=%s)", ALLOWED_CHAT or "any")
     app.run_polling(allowed_updates=["message"])
 
 

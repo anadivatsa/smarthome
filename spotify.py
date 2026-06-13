@@ -12,6 +12,7 @@ Setup (one-time):
 import base64
 import json
 import os
+import secrets as _secrets
 import threading
 import time
 import urllib.parse
@@ -46,8 +47,9 @@ _SCOPES = " ".join([
     "user-library-read",
 ])
 
-_TOKEN_FILE = _DIR / "spotify_tokens.json"
-_BASE       = "https://api.spotify.com/v1"
+_TOKEN_FILE  = _DIR / "spotify_tokens.json"
+_BASE        = "https://api.spotify.com/v1"
+_oauth_state = ""  # set by sp_auth_url(), verified by sp_verify_state()
 
 # ---------------------------------------------------------------------------
 # Token management
@@ -75,6 +77,10 @@ def _save_tokens(access_token: str, refresh_token: str, expires_in: int):
     expires_at = time.time() + expires_in - 60
     data = {"access_token": access_token, "refresh_token": refresh_token, "expires_at": expires_at}
     _TOKEN_FILE.write_text(json.dumps(data, indent=2))
+    try:
+        _TOKEN_FILE.chmod(0o600)
+    except OSError:
+        pass
     with _token_lock:
         _access_token = access_token
         _token_expiry = expires_at
@@ -311,16 +317,24 @@ def sp_search(query: str, limit: int = 5) -> tuple[dict | None, str | None]:
 # ---------------------------------------------------------------------------
 
 def sp_auth_url() -> str | None:
+    global _oauth_state
     if not CLIENT_ID:
         return None
+    _oauth_state = _secrets.token_urlsafe(16)
     params = {
         "client_id":     CLIENT_ID,
         "response_type": "code",
         "redirect_uri":  REDIRECT_URI,
         "scope":         _SCOPES,
         "show_dialog":   "false",
+        "state":         _oauth_state,
     }
     return "https://accounts.spotify.com/authorize?" + urllib.parse.urlencode(params)
+
+
+def sp_verify_state(received: str) -> bool:
+    """Verify the OAuth state nonce to prevent CSRF on the callback."""
+    return bool(_oauth_state) and _secrets.compare_digest(_oauth_state, received)
 
 
 def sp_exchange_code(code: str) -> tuple[bool, str | None]:

@@ -202,6 +202,11 @@ def resolve_intent(transcript: str) -> list:
 # Hub dispatcher
 # ---------------------------------------------------------------------------
 
+def _hub_headers() -> dict:
+    key = os.getenv("NEO_API_KEY", "").strip()
+    return {"X-Neo-Key": key} if key else {}
+
+
 def dispatch(actions: list) -> list[str]:
     """Fire hub endpoints; return human-readable result lines."""
     results = []
@@ -215,7 +220,7 @@ def dispatch(actions: list) -> list[str]:
         url = f"{HUB_URL}{action}"
         log.info("→ %-30s  %s", action, reason)
         try:
-            r = requests.get(url, timeout=60)
+            r = requests.get(url, headers=_hub_headers(), timeout=60)
             results.append(f"✓ {action}")
             log.debug("   HTTP %d", r.status_code)
         except Exception as exc:
@@ -289,7 +294,7 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ("/presence",       "Presence", _fmt_presence),
     ]:
         try:
-            r = requests.get(f"{HUB_URL}{path}", timeout=5)
+            r = requests.get(f"{HUB_URL}{path}", headers=_hub_headers(), timeout=5)
             lines.append(f"{label}: {fmt(r.json())}")
         except Exception as exc:
             lines.append(f"{label}: ⚠️ {exc}")

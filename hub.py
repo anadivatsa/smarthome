@@ -40,6 +40,7 @@ from pathlib import Path
 import requests
 from flask import Flask, jsonify, request, send_from_directory
 
+import auth
 import tv as TV
 import spotify as SP
 import beat_sync as BS
@@ -56,6 +57,11 @@ TAGS_FILE     = Path(__file__).parent / "tags.json"
 PRESENCE_FILE = Path(__file__).parent / "presence.json"
 
 app = Flask(__name__)
+
+
+@app.before_request
+def _check_auth():
+    return auth.check_auth()
 
 
 _scenes_cache: dict | None = None
@@ -368,6 +374,10 @@ def route_tv_enter():   return jsonify({"ok": TV.tv_enter()[0]})
 
 @app.route("/tv/key/<key>")
 def route_tv_key(key):
+    if key not in TV.KEY_WHITELIST:
+        return jsonify({"ok": False, "key": key,
+                        "error": f"Key '{key}' not in whitelist",
+                        "allowed": sorted(TV.KEY_WHITELIST)}), 400
     ok, err = TV.tv_key(key)
     return jsonify({"ok": ok, "key": key, "error": err})
 
@@ -485,6 +495,9 @@ def route_sp_callback():
     error = request.args.get("error")
     if error:
         return jsonify({"error": f"Spotify auth denied: {error}"}), 400
+    state = request.args.get("state", "")
+    if not SP.sp_verify_state(state):
+        return jsonify({"error": "OAuth state mismatch — possible CSRF, try /spotify/auth again"}), 400
     code = request.args.get("code", "")
     ok, err = SP.sp_exchange_code(code)
     if not ok:

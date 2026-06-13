@@ -220,6 +220,11 @@ def resolve_intent(transcript: str) -> list:
 # Hub dispatcher
 # ---------------------------------------------------------------------------
 
+def _hub_headers() -> dict:
+    key = os.getenv("NEO_API_KEY", "").strip()
+    return {"X-Neo-Key": key} if key else {}
+
+
 def dispatch(actions: list):
     for item in actions:
         action = item.get("action")
@@ -230,7 +235,7 @@ def dispatch(actions: list):
         url = f"{HUB_URL}{action}"
         log.info("→ %-30s  %s", action, reason)
         try:
-            r = requests.get(url, timeout=20)
+            r = requests.get(url, headers=_hub_headers(), timeout=20)
             log.debug("   HTTP %d  %s", r.status_code, r.text[:100])
         except Exception as exc:
             log.error("   dispatch failed: %s", exc)

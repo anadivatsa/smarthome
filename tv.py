@@ -27,6 +27,20 @@ BOOT_WAIT    = 12   # seconds to wait after WoL before trying WebSocket
 WS_POLL_WAIT = 2    # seconds between WebSocket-ready polls
 WS_POLL_MAX  = 20   # max seconds to wait for WebSocket after power-on
 
+# Whitelist of key codes accepted by GET /tv/key/<key>.
+# Covers every key used internally + common remote functions.
+KEY_WHITELIST = frozenset([
+    "KEY_POWER", "KEY_POWEROFF",
+    "KEY_VOLUMEUP", "KEY_VOLUMEDOWN", "KEY_MUTE",
+    "KEY_CHANNELUP", "KEY_CHANNELDOWN",
+    "KEY_UP", "KEY_DOWN", "KEY_LEFT", "KEY_RIGHT", "KEY_ENTER",
+    "KEY_RETURN", "KEY_HOME", "KEY_MENU",
+    "KEY_PLAY", "KEY_PAUSE", "KEY_STOP", "KEY_FF", "KEY_REWIND",
+    "KEY_NEXT", "KEY_PREVIOUS",
+    "KEY_HDMI1", "KEY_HDMI2", "KEY_HDMI3", "KEY_HDMI4",
+    "KEY_TV", "KEY_AV",
+])
+
 # Confirmed installed apps (discovered via rest_app_status probe)
 APPS = {
     "netflix":  "3201907018807",
@@ -59,6 +73,10 @@ def _token() -> str | None:
 def _save_token(token: str):
     TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
     TOKEN_FILE.write_text(json.dumps({"token": token}))
+    try:
+        TOKEN_FILE.chmod(0o600)
+    except OSError:
+        pass
 
 
 def _connect():

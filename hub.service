@@ -10,6 +10,7 @@ WorkingDirectory=/home/anadivatsa/smarthome
 ExecStart=/home/anadivatsa/smarthome/venv/bin/python hub.py
 Restart=on-failure
 RestartSec=5
+EnvironmentFile=-/home/anadivatsa/smarthome/hub.env
 StandardOutput=journal
 StandardError=journal
 Environment=PYTHONUNBUFFERED=1

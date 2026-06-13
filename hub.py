@@ -32,17 +32,25 @@ NFC tags:   POST /nfc/scan             {"uid": "<NFC identifier>"}  → executes
 """
 
 import json
+import logging
 import os
 import threading
 import time
 from pathlib import Path
 
 import requests
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s  %(message)s",
+    datefmt="%H:%M:%S",
+)
 from flask import Flask, jsonify, request, send_from_directory
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
 import auth
+import utils
 import tv as TV
 import spotify as SP
 import beat_sync as BS
@@ -64,7 +72,7 @@ except Exception as _import_err:
 # ---------------------------------------------------------------------------
 
 PORT          = int(os.getenv("HUB_PORT", "5001"))
-HUB_IP        = os.getenv("HUB_IP", "localhost")
+HUB_IP        = os.getenv("HUB_IP", "") or utils.get_local_ip()
 LAMP_BASE     = os.getenv("LAMP_URL", "http://localhost:5000")
 SCENES_FILE   = Path(__file__).parent / "scenes.json"
 TAGS_FILE     = Path(__file__).parent / "tags.json"
@@ -775,6 +783,49 @@ def route_shortcuts():
         "tv": {
             "TV on":         f"{base}/tv/on",
             "TV off":        f"{base}/tv/off",
+        },
+    })
+
+
+# ---------------------------------------------------------------------------
+# Info / health endpoint
+# ---------------------------------------------------------------------------
+
+@app.route("/api/info")
+@limiter.limit("30/minute")
+def route_api_info():
+    import subprocess as _sp  # noqa: PLC0415
+    def _svc(name):
+        try:
+            r = _sp.run(["systemctl", "is-active", name], capture_output=True, text=True, timeout=3)
+            return r.stdout.strip()
+        except Exception:
+            return "unknown"
+
+    def _port_listening(port):
+        import socket as _sock  # noqa: PLC0415
+        try:
+            s = _sock.create_connection(("127.0.0.1", port), timeout=1)
+            s.close()
+            return "running"
+        except Exception:
+            return "not reachable"
+
+    ts_ip    = utils.get_tailscale_ip()
+    local_ip = utils.get_local_ip()
+    return jsonify({
+        "hostname":           utils.HOSTNAME,
+        "local_ip":           local_ip,
+        "tailscale_ip":       ts_ip or None,
+        "hub_url_local":      f"http://{local_ip}:{PORT}",
+        "hub_url_tailscale":  f"http://{ts_ip}:{PORT}" if ts_ip else None,
+        "version":            utils.git_version(),
+        "uptime_seconds":     round(utils.uptime_seconds()),
+        "services": {
+            "hub":      _svc("hub"),
+            "tgvoice":  _svc("tgvoice"),
+            "voice":    _svc("voice"),
+            "wiz_lamp": _port_listening(5000),
         },
     })
 

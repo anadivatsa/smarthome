@@ -4,9 +4,10 @@ Spotify Web API client for Smart Home Hub.
 
 Setup (one-time):
   1. Create an app at https://developer.spotify.com/dashboard
-  2. Add redirect URI: http://192.168.1.8:5001/spotify/callback
+  2. Add redirect URI: http://<neo-ip>:5001/spotify/callback
+     (get the current IP from GET /api/info)
   3. Copy Client ID + Secret into smarthome/spotify.env
-  4. Visit http://192.168.1.8:5001/spotify/auth in a browser to authorise
+  4. Visit http://<neo-ip>:5001/spotify/auth in a browser to authorise
 """
 
 import base64
@@ -19,6 +20,7 @@ import urllib.parse
 from pathlib import Path
 
 import requests
+import utils
 
 # ---------------------------------------------------------------------------
 # Config
@@ -36,7 +38,10 @@ if _env_file.exists():
 
 CLIENT_ID     = os.getenv("SPOTIFY_CLIENT_ID", "")
 CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "")
-REDIRECT_URI  = os.getenv("SPOTIFY_REDIRECT_URI", "")
+# SPOTIFY_REDIRECT_URI env var takes precedence; auto-detected fallback uses
+# utils.get_local_ip() so the URI is always correct regardless of network config.
+REDIRECT_URI  = os.getenv("SPOTIFY_REDIRECT_URI", "") or \
+                f"http://{utils.get_local_ip()}:5001/spotify/callback"
 
 _SCOPES = " ".join([
     "user-read-playback-state",

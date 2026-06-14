@@ -129,12 +129,13 @@ def init() -> None:
     c = _conn()
     c.executescript("""
         CREATE TABLE IF NOT EXISTS memories (
-            id        INTEGER PRIMARY KEY AUTOINCREMENT,
-            content   TEXT    NOT NULL,
-            role      TEXT    NOT NULL DEFAULT 'user',
-            source    TEXT    NOT NULL DEFAULT 'manual',
-            embedding BLOB,
-            timestamp TEXT    NOT NULL DEFAULT (datetime('now'))
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            content     TEXT    NOT NULL,
+            role        TEXT    NOT NULL DEFAULT 'user',
+            source      TEXT    NOT NULL DEFAULT 'manual',
+            source_type TEXT    NOT NULL DEFAULT 'legacy',
+            embedding   BLOB,
+            timestamp   TEXT    NOT NULL DEFAULT (datetime('now'))
         );
 
         CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
@@ -176,6 +177,15 @@ def init() -> None:
         );
     """)
     c.commit()
+
+    # Migrate existing installs: add source_type column if it was created before this upgrade
+    try:
+        c.execute("ALTER TABLE memories ADD COLUMN source_type TEXT NOT NULL DEFAULT 'legacy'")
+        c.execute("UPDATE memories SET source_type = 'diary' WHERE role = 'diary'")
+        c.commit()
+        log.info("memory: added source_type column")
+    except Exception:
+        pass  # Column already exists — normal on subsequent startups
 
     # Start background model loader (daemon — hub continues if it fails)
     if not _embed_ready.is_set():

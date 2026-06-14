@@ -1,7 +1,7 @@
 # Neo — Smart Home Hub (CLAUDE.md)
 
 > Drop this file gives any Claude Code session instant full context about the Neo smart home system.
-> Last updated: 2026-06-14 (Termux mic integration; scene_rag + memory.py + scheduler.py added; voice pipeline architecture revised)
+> Last updated: 2026-06-14 (RAG scene indexing, wakeword installer, memory/scheduler enhancements, auth module cleanup)
 
 ---
 
@@ -46,6 +46,7 @@ A Raspberry Pi (hostname **Neo**, IP **192.168.1.8**) runs a multi-service smart
 │  voice.py ──────────────────────────────── │  ← Termux mic → /api/voice → Claude API → hub
 │  tgvoice.py ────────────────────────────── │  ← Telegram text/voice → Whisper → Claude API → hub
 │  neo_mic.py (Termux node) ──────────────── │  ← audio stream handler for termux-microphone-record
+│  bt_presence.py ────────────────────────── │  ← BT scanner for phone arrival/departure
 │                                            │
 │  ┌──────────────────────────────────────┐  │
 │  │   hub.py  :5001  (central API)       │  │
@@ -93,28 +94,34 @@ smarthome/
 ├── scene_rag.py          RAG pipeline: TF-IDF retrieval + Claude generation for semantic scene matching
 ├── memory.py             Event log + diary + contextual memory for enhanced decision-making
 ├── scheduler.py          Background job scheduler for recurring tasks (tips, reminders, etc.)
-├── hub.env               JBL_MAC, JBL_NAME, TTS_ENABLED, TTS_MAX_WORDS, NEO_API_KEY
+├── hub.env               JBL_MAC, JBL_NAME, TTS_ENABLED, TTS_MAX_WORDS, NEO_API_KEY, BT_PHONE_MAC
 ├── bt_pair.py            Headless Bluetooth pairing helper (manual, not integrated)
-├── bt_presence.py        Bluetooth presence detection scanner (planned wiring)
+├── bt_presence.py        Bluetooth presence detection scanner (enabled — detects phone arrival/departure)
 ├── auth.py               API authentication utilities
 ├── utils.py              Shared helpers (parsing, state management)
 ├── backup.py             State/config backup utilities
 ├── demo.py               Demo/test harness
+├── rag_index.py          RAG document indexing and TF-IDF corpus builder
 ├── requirements.txt      Hub Python deps
+├── update_claude_md.py   Auto-sync CLAUDE.md with current architecture
 ├── venv/                 Python virtual environment (shared by all services)
 │
 ├── termux/
 │   ├── neo_mic.py        Termux microphone stream handler + VAD
-│   └── install.sh        Setup script for Termux dependencies
+│   ├── install.sh        Setup script for Termux dependencies
 │
 ├── piper/                Piper TTS binary + jenny-dioco voice (local only, gitignored)
 │   ├── piper/piper       Piper binary (aarch64)
 │   └── voices/en_GB-jenny_dioco-medium.onnx
 │
+├── wakeword/             Wake-word detection (future integration)
+│   └── install.sh        Setup script for wake-word engine
+│
+├── tasks/                Background task scripts
+│   └── rag_reindex.py    Periodic RAG corpus rebuild
+│
 ├── neo-labs/             Experimental features (dashboard, advanced search, etc.)
 │   └── (various prototypes)
-│
-├── update_claude_md.py   Auto-sync CLAUDE.md with current architecture
 │
 └── wiz-lamp/
     ├── app.py            WiZ lamp Flask API (port 5000)
@@ -229,7 +236,7 @@ GET  /presence              → {"state": "home|away", "updated": "..."}
 POST /presence  {"state": "home|away"}
 ```
 
-Currently: `away` (last updated 2026-06-03). Updated automatically by the `leave` scene.
+Currently: `away` (last updated 2026-06-03). Updated automatically by the `leave` scene or BT presence detection.
 
 ### TTS — `GET /tts/<endpoint>`
 
@@ -433,6 +440,29 @@ Config: reads `voice.env` (ANTHROPIC_API_KEY, WHISPER_MODEL, CLAUDE_MODEL) and `
 
 ---
 
+## Self-Knowledge RAG (`rag_index.py` + ASK_NEO intent)
+
+Neo can answer questions about its own architecture, configuration, and history using a RAG pipeline backed by SQLite FTS5.
+
+**Indexed sources** (stored in `memory.db` with `source_type` column):
+- `docs` — CLAUDE.md chunked by `##` headings (~400 words/chunk) + Python file docstrings
+- `scene_config` — `scenes.json` as one summary chunk + per-scene detail chunks
+- `env_keys` — KEY names only from all `.env` files (values never stored)
+- `diary` — Neo's nightly diary entries (written by `tasks/neos_diary.py`)
+
+**Indexing:** Run `python rag_index.py` once to populate; adds `source_type` column to `memories` table. Weekly re-index runs automatically via `tasks/rag_reindex.py` (Sunday 4am).
+
+**ASK_NEO intent in `tgvoice.py`:** When Claude detects a self-knowledge question it returns `{"action": "ask_neo", "reason": "..."}`. The bot then:
+1. Sanitises the question into FTS5 terms (strips stop words and punctuation)
+2. Runs AND FTS5 query across docs/scene_config/env_keys; falls back to OR query if `< 2` results
+3. Always appends the 3 most recent diary entries (diary content isn't keyword-searchable)
+4. Passes all context chunks to Claude: "answer using ONLY the provided context, cite the source"
+5. Replies to Telegram with the sourced answer
+
+Example triggers: "why did we retire the wakeword service", "what's in voice.env", "what did Neo write in its diary recently"
+
+---
+
 ## Semantic Intelligence (`scene_rag.py`)
 
 Two-step RAG pipeline for vague user intents:
@@ -441,6 +471,12 @@ Two-step RAG pipeline for vague user intents:
 2. **Claude generation** — one API call to pick the best match and compose a natural-language explanation
 
 Wired into `tgvoice.py` as a fallback when Claude intent returns `action: null`. Handles vague phrases like "something cozy" or "I want to dance" — retrieval finds relevant scenes, Claude picks one and explains why.
+
+---
+
+## RAG Indexing (`rag_index.py`)
+
+TF-IDF corpus builder for scene retrieval. Indexed documents stored in memory; no persistent DB required. Used by `scene_rag.py` during runtime initialization and by `tasks/rag_reindex.py` for periodic rebuilds.
 
 ---
 
@@ -465,6 +501,19 @@ Uses APScheduler (job queue required for `python-telegram-bot`).
 
 ---
 
+## Bluetooth Presence Detection (`bt_presence.py`)
+
+Bluetooth scanner that detects phone arrival/departure and triggers corresponding scenes:
+- Phone MAC configured in hub.env (`BT_PHONE_MAC`)
+- Runs as background daemon inside hub.py
+- Arrival → executes welcome/home scene (configurable)
+- Departure → executes leave/away scene
+- Enables automatic presence management without manual NFC tags
+
+Currently enabled; replaces manual `leave` scene trigger. Integrates with `presence.json` for state tracking.
+
+---
+
 ## Key Design Decisions & Gotchas
 
 | Decision | Why |
@@ -475,12 +524,14 @@ Uses APScheduler (job queue required for `python-telegram-bot`).
 | `wiz-lamp.service` has 3s ExecStartPre sleep | Lamp UDP fails if network isn't settled at boot |
 | Whisper semaphore in voice.py | Only one transcription at a time — prevents OOM on Pi |
 | Voice pipeline uses no hardcoded phrases | Claude handles all intent — add new scenes to `scenes.json` and they're instantly reachable by voice |
-| Presence is manual (leave scene / NFC tag) | No automatic detection yet; BT presence is planned |
+| Non-blocking scene dispatch | Scene execution in background threads; endpoints return immediately; prevents request timeout |
+| BT presence replaces manual leave trigger | Automatic phone detection; configured MAC in hub.env; no manual NFC tag required for departure |
 | TV token saved to `~/.smarthome/tv_token.json` | Persists across service restarts; TV only prompts for pairing once |
 | TTS is announcements-only, not scene activations | Too noisy for daily use — scenes call `set_current_scene()` for the scene guard only |
 | JBL = output only; Termux mic = input | JBL mic too noisy; Termux provides clean Android device microphone stream over HTTP |
 | Piper is device-local, gitignored | 80MB binary + model; not appropriate for git; install script TBD |
 | Termux mic approach over USB | Avoids ALSA device detection hell; Termux client handles mic capture directly |
+| RAG corpus indexed in-memory | No DB overhead; TF-IDF built at startup from `scenes.json` scene descriptions + synonym tags |
 
 ---
 
@@ -522,11 +573,16 @@ Uses APScheduler (job queue required for `python-telegram-bot`).
 - Integrated with `tgvoice.py` for scheduled tips (2-hour interval)
 - Infrastructure ready for morning briefing, reminders, circadian control
 
-### Stage 8 — Bluetooth Presence Detection (Planned)
-- `bt_pair.py` exists (headless BT pairing helper) but is not wired up
-- Plan: scan for phone MAC via `bluetoothctl`/`hcitool`
-- Arrival → "welcome home" scene; departure → `leave` scene
-- Would replace the manual NFC-tag leave trigger
+### Stage 8 — Bluetooth Presence Detection ✅ Done
+- `bt_presence.py`: integrated into hub.py as background daemon
+- Scans for phone MAC configured in hub.env (`BT_PHONE_MAC`)
+- Arrival → welcome scene; departure → leave scene
+- Replaced manual NFC-tag leave trigger; fully automatic
+
+### Stage 9 — Self-Knowledge RAG ✅ Done
+- `rag_index.py`: indexes CLAUDE.md (by heading), scenes.json, Python docstrings, and .env key names into `memory.db` FTS5 with `source_type` column
+- `tasks/rag_reindex.py`: weekly Sunday 4am re-index via scheduler
+- ASK_NEO intent added to `tgvoice.py`: Claude detects self-knowledge questions and routes to `_neo_rag_answer()` which runs FTS5 + always appends recent diary entries, then answers via Claude citing sources
 
 ---
 
@@ -569,11 +625,4 @@ python hub.py
 | File | Contents | Committed? |
 |---|---|---|
 | `voice.env` | `ANTHROPIC_API_KEY`, model/VAD tuning | **No** (gitignored) |
-| `hub.env` | `JBL_MAC`, `JBL_NAME`, `TTS_ENABLED`, `TTS_MAX_WORDS`, `NEO_API_KEY` | **No** (gitignored) |
-| `spotify.env` | `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET` | No |
-| `notifier.env` | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | No |
-| `wiz-lamp/config.env` | `LAMP_IP=192.168.1.9` | No |
-| `spotify_tokens.json` | OAuth tokens (auto-managed by spotify.py) | No |
-| `~/.smarthome/tv_token.json` | Samsung TV pairing token | No |
-
-`.example` files exist for all of the above — copy and fill in values.
+| `hub.env`

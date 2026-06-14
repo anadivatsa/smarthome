@@ -9,6 +9,7 @@ Reuses transcribe() / resolve_intent() / dispatch() from voice.py.
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -151,7 +152,7 @@ on  off  bpm/<n>
 
 ## Response format — strict JSON only, no markdown, no prose
 
-Single action:
+Single home-control action:
 {{"action": "/scene/movie", "reason": "user wants to watch a movie"}}
 
 Multiple actions (executed in order):
@@ -160,13 +161,33 @@ Multiple actions (executed in order):
   {{"action": "/scene/focus",   "reason": "activate focus mode"}}
 ]
 
-No-op (unclear or not a home-control request):
+Self-knowledge query (user asks about Neo's own system):
+{{"action": "ask_neo", "reason": "brief description of what they're asking"}}
+
+No-op (unclear input, filler words, background noise):
 {{"action": null, "reason": "command unclear or no matching action"}}
+
+## ASK_NEO — questions about Neo itself
+Use {{"action": "ask_neo"}} when the user asks about:
+- Neo's architecture, services, design decisions, or why something was built a certain way
+- Configuration files or environment variables ("what's in voice.env?")
+- History or past decisions ("why did we retire the wakeword service?")
+- Past diary entries ("what did Neo write in its diary?")
+- How a specific feature works internally
+
+Examples → ask_neo (NOT null, NOT a home-control endpoint):
+  "why did we retire the wakeword service"
+  "what's in voice.env"
+  "what did Neo write in its diary recently"
+  "how does beat sync work"
+  "tell me about the BT presence detection"
+  "what scenes do we have and what do they do"  ← system knowledge, not activation
 
 ## Matching rules
 - Prefer /scene/* over separate /lamp + /tv calls — scenes handle both together
 - Volume: "louder" → /tv/volume/10,  "a bit louder" → /tv/volume/5,  "quieter" → /tv/volume/-10
 - Brightness: "dim it" → /lamp/brightness/20,  "brighter" → /lamp/brightness/80
+- Genuine self-knowledge questions → ask_neo (never null for these)
 - Filler words, coughs, background noise → action: null
 - Never output anything other than valid JSON"""
 
@@ -262,6 +283,142 @@ def _rag_fallback(transcript: str) -> tuple[list[str], str | None]:
     except Exception as exc:
         log.warning("RAG fallback failed: %s", exc)
         return [], None
+
+
+# ---------------------------------------------------------------------------
+# ASK_NEO — self-knowledge RAG answer
+# ---------------------------------------------------------------------------
+
+_FTS_STRIP    = re.compile(r"[^\w\s]")
+_FTS_STOPWORDS = frozenset({
+    "what", "why", "how", "when", "where", "which", "who",
+    "did", "does", "do", "is", "are", "was", "were", "will", "can",
+    "could", "would", "should", "have", "has", "had", "been", "be",
+    "the", "a", "an", "in", "of", "to", "for", "at", "by", "with",
+    "that", "this", "it", "its", "we", "our", "you", "me", "my",
+    "tell", "show", "get", "give", "recently", "lately", "s",
+})
+
+
+def _sanitize_fts(question: str) -> str:
+    """Strip punctuation and stop words; return a clean FTS5 query string."""
+    words = _FTS_STRIP.sub(" ", question.lower()).split()
+    kept  = [w for w in words if w not in _FTS_STOPWORDS and len(w) > 2]
+    return " ".join(kept) if kept else (words[0] if words else "neo")
+
+
+def _neo_rag_answer(question: str) -> str:
+    """Search RAG knowledge base (docs/scene_config/env_keys/diary) and answer via Claude."""
+    fts_q = _sanitize_fts(question)
+    log.info("ASK_NEO FTS query: %r", fts_q)
+
+    conn       = memory._conn()
+    seen_srcs  = set()
+    chunks     = []
+
+    def _add(rows) -> None:
+        for row in rows:
+            key = f"{row['source_type']}:{row['source']}"
+            if key not in seen_srcs:
+                seen_srcs.add(key)
+                chunks.append(row)
+
+    rag_types = "('docs','scene_config','env_keys')"
+
+    if fts_q:
+        # 1. AND query (all terms must appear)
+        try:
+            _add(conn.execute(
+                f"""SELECT m.source_type, m.source, m.content
+                    FROM memories_fts f JOIN memories m ON m.id = f.rowid
+                    WHERE memories_fts MATCH ?
+                    AND m.source_type IN {rag_types}
+                    ORDER BY rank LIMIT 5""",
+                (fts_q,),
+            ).fetchall())
+        except Exception as exc:
+            log.debug("FTS AND failed: %s", exc)
+
+        # 2. OR query fallback (any term matches) — handles synonym misses like "retire" vs "removed"
+        if len(chunks) < 2:
+            or_q = " OR ".join(w for w in fts_q.split() if len(w) > 3)
+            if or_q and or_q != fts_q:
+                try:
+                    _add(conn.execute(
+                        f"""SELECT m.source_type, m.source, m.content
+                            FROM memories_fts f JOIN memories m ON m.id = f.rowid
+                            WHERE memories_fts MATCH ?
+                            AND m.source_type IN {rag_types}
+                            ORDER BY rank LIMIT 5""",
+                        (or_q,),
+                    ).fetchall())
+                except Exception as exc:
+                    log.debug("FTS OR failed: %s", exc)
+
+        # 3. LIKE fallback on the most specific word
+        if not chunks:
+            word = max(fts_q.split(), key=len, default="")
+            if word:
+                try:
+                    _add(conn.execute(
+                        f"""SELECT source_type, source, content FROM memories
+                            WHERE source_type IN {rag_types}
+                            AND content LIKE ?
+                            ORDER BY id DESC LIMIT 5""",
+                        (f"%{word}%",),
+                    ).fetchall())
+                except Exception:
+                    pass
+
+    # Always fetch recent diary entries — their content isn't keyword-indexed meaningfully
+    try:
+        _add(conn.execute(
+            """SELECT source_type, source, content FROM memories
+               WHERE source_type = 'diary'
+               ORDER BY timestamp DESC LIMIT 3"""
+        ).fetchall())
+    except Exception:
+        # source_type not yet added (rag_index.py not yet run); fall back to role
+        try:
+            _add(conn.execute(
+                """SELECT 'diary' AS source_type, source, content FROM memories
+                   WHERE role = 'diary'
+                   ORDER BY timestamp DESC LIMIT 3"""
+            ).fetchall())
+        except Exception:
+            pass
+
+    if not chunks:
+        return (
+            "I couldn't find relevant information in my knowledge base. "
+            "Try running rag_index.py to populate the RAG index first."
+        )
+
+    context_parts = []
+    for row in chunks:
+        label = f"{row['source_type']} / {row['source']}"
+        context_parts.append(f"[{label}]\n{row['content'][:600]}")
+
+    context = "\n\n---\n\n".join(context_parts)
+
+    prompt = (
+        "Answer this question about the Neo smart home system using ONLY the provided context. "
+        "Cite which source the answer comes from (e.g. 'According to CLAUDE.md...'). "
+        "Be concise and direct.\n\n"
+        f"Question: {question}\n\n"
+        f"Context:\n{context}"
+    )
+
+    try:
+        resp = _get_claude().messages.create(
+            model=MODEL,
+            max_tokens=450,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return resp.content[0].text.strip()
+    except Exception as exc:
+        log.error("_neo_rag_answer Claude call failed: %s", exc)
+        return f"RAG answer failed: {exc}"
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +574,18 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
     history, ctx = _memory_context(transcript)
     actions  = resolve_intent(transcript, history=history, mem_context=ctx)
+
+    if len(actions) == 1 and actions[0].get("action") == "ask_neo":
+        log.info("ASK_NEO intent detected")
+        answer = _neo_rag_answer(transcript)
+        reply  = f'🗣 "{transcript}"\n\n🧠 {answer}'
+        try:
+            memory.store_conversation("assistant", answer)
+        except Exception:
+            pass
+        await msg.reply_text(reply)
+        return
+
     if all(not a.get("action") for a in actions):
         rag_lines, rag_reply = _rag_fallback(transcript)
         results = rag_lines or dispatch(actions)
@@ -448,6 +617,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
     history, ctx = _memory_context(transcript)
     actions  = resolve_intent(transcript, history=history, mem_context=ctx)
+
+    if len(actions) == 1 and actions[0].get("action") == "ask_neo":
+        log.info("ASK_NEO intent detected")
+        answer = _neo_rag_answer(transcript)
+        reply  = f'💬 "{transcript}"\n\n🧠 {answer}'
+        try:
+            memory.store_conversation("assistant", answer)
+        except Exception:
+            pass
+        await msg.reply_text(reply)
+        return
+
     if all(not a.get("action") for a in actions):
         rag_lines, rag_reply = _rag_fallback(transcript)
         results = rag_lines or dispatch(actions)

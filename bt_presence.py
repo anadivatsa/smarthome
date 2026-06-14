@@ -30,6 +30,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from datetime import datetime
@@ -87,6 +88,11 @@ def _hub(path: str, method: str = "GET", body: dict | None = None) -> bool:
         return False
 
 
+def _hub_bg(path: str, method: str = "GET", body: dict | None = None) -> None:
+    """Fire a hub call in a background thread so the poll loop never blocks."""
+    threading.Thread(target=_hub, args=(path, method, body), daemon=True).start()
+
+
 def _in_range(mac: str) -> bool:
     """Return True if the device responds to a single l2ping."""
     try:
@@ -120,11 +126,11 @@ def run() -> None:
                 prev = state
                 state = "home"
                 log.info("📱 Phone detected — %s → home", prev)
-                _hub("/presence", method="POST", body={"state": "home"})
+                _hub_bg("/presence", method="POST", body={"state": "home"})
                 if prev != "unknown":
                     # Only trigger welcome scene if we knew they were away before
                     log.info("→ triggering scene/%s (arrival)", BT_HOME_SCENE)
-                    _hub(f"/scene/{BT_HOME_SCENE}")
+                    _hub_bg(f"/scene/{BT_HOME_SCENE}")
                 else:
                     log.info("→ startup detection, presence set to home (no scene)")
         else:
@@ -138,11 +144,11 @@ def run() -> None:
                 if prev == "home":
                     # Known departure: trigger full leave scene (sets presence=away)
                     log.info("→ triggering scene/%s (departure)", BT_AWAY_SCENE)
-                    _hub(f"/scene/{BT_AWAY_SCENE}")
+                    _hub_bg(f"/scene/{BT_AWAY_SCENE}")
                 else:
                     # Boot with phone already away: just set presence, no scene
                     log.info("→ startup: phone not found, setting presence=away quietly")
-                    _hub("/presence", method="POST", body={"state": "away"})
+                    _hub_bg("/presence", method="POST", body={"state": "away"})
 
         time.sleep(POLL_INTERVAL)
 

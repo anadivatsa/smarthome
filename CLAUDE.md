@@ -1,13 +1,13 @@
 # Neo — Smart Home Hub (CLAUDE.md)
 
 > Drop this file gives any Claude Code session instant full context about the Neo smart home system.
-> Last updated: 2026-06-13 (Piper TTS + JBL audio output; TTS routes; voice.py crash noted)
+> Last updated: 2026-06-14 (Termux mic integration; scene_rag + memory.py + scheduler.py added; voice pipeline architecture revised)
 
 ---
 
 ## What This Is
 
-A Raspberry Pi (hostname **Neo**, IP **192.168.1.8**) runs a multi-service smart home automation hub 24/7. It controls a Samsung TV and a WiZ smart bulb through a central Flask HTTP API, with two voice intelligence layers: a local VAD pipeline (`voice.py`) and a Telegram bot (`tgvoice.py`) that accepts both text and voice messages via Whisper + Claude API. A JBL Flip 4 Bluetooth speaker is connected for TTS audio output via Piper (neural, offline).
+A Raspberry Pi (hostname **Neo**, IP **192.168.1.8**) runs a multi-service smart home automation hub 24/7. It controls a Samsung TV and a WiZ smart bulb through a central Flask HTTP API, with two voice intelligence layers: a local VAD pipeline (`voice.py` via Termux microphone) and a Telegram bot (`tgvoice.py`) that accepts both text and voice messages via Whisper + Claude API. A JBL Flip 4 Bluetooth speaker is connected for TTS audio output via Piper (neural, offline).
 
 ---
 
@@ -18,7 +18,7 @@ A Raspberry Pi (hostname **Neo**, IP **192.168.1.8**) runs a multi-service smart
 | Raspberry Pi (Neo) | 192.168.1.8 | All services; runs 24/7 |
 | Samsung TV (Tizen) | 192.168.1.2 | WebSocket :8002 (keys) + REST :8001 (apps/status) |
 | WiZ smart bulb | 192.168.1.9 | UDP via pywizlight |
-| 3.5mm earphone mic | (USB audio) | Voice input for voice.service |
+| Termux mic (Android) | — | Voice input via `termux-microphone-record` → `/api/voice` endpoint |
 | JBL Flip 4 | 6C:47:60:AA:21:DE | Bluetooth speaker — TTS audio output via Piper |
 
 ---
@@ -29,7 +29,7 @@ A Raspberry Pi (hostname **Neo**, IP **192.168.1.8**) runs a multi-service smart
 |---|---|---|---|
 | `hub.service` | `smarthome/hub.py` | 5001 | **active** |
 | `wiz-lamp.service` | `smarthome/wiz-lamp/app.py` | 5000 | **active** |
-| `voice.service` | `smarthome/voice.py` | — | **crash-looping** ⚠️ (mic device fix needed) |
+| `voice.service` | `smarthome/voice.py` | — | **inactive** (Termux mic approach preferred) |
 | `tgvoice.service` | `smarthome/tgvoice.py` | — | **active** |
 | `bt_jbl.service` | `/etc/systemd/system/bt_jbl.service` | — | **active** (auto-connects JBL on boot) |
 
@@ -43,8 +43,9 @@ A Raspberry Pi (hostname **Neo**, IP **192.168.1.8**) runs a multi-service smart
 ┌────────────────────────────────────────────┐
 │               Raspberry Pi (Neo)            │
 │                                            │
-│  voice.py ──────────────────────────────── │  ← mic → VAD → Whisper → Claude API → hub
+│  voice.py ──────────────────────────────── │  ← Termux mic → /api/voice → Claude API → hub
 │  tgvoice.py ────────────────────────────── │  ← Telegram text/voice → Whisper → Claude API → hub
+│  neo_mic.py (Termux node) ──────────────── │  ← audio stream handler for termux-microphone-record
 │                                            │
 │  ┌──────────────────────────────────────┐  │
 │  │   hub.py  :5001  (central API)       │  │
@@ -80,7 +81,7 @@ smarthome/
 ├── spotify_tokens.json   Spotify OAuth tokens (scopes: playback, library)
 ├── spotify.env           SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET
 ├── notifier.env          TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
-├── voice.py              Voice pipeline: VAD → Whisper → Claude → hub
+├── voice.py              Voice pipeline: Termux mic → /api/voice → Whisper → Claude → hub
 ├── tgvoice.py            Telegram bot: text/voice → Whisper → Claude → hub
 ├── voice.env             ANTHROPIC_API_KEY + voice tuning (copy from .example)
 ├── voice.env.example     Template for voice.env
@@ -89,14 +90,31 @@ smarthome/
 ├── hub.service           systemd unit for hub.py
 ├── install.sh            Installs hub.service + venv
 ├── tts.py                Piper TTS engine — speak() / speak_async() → JBL via PipeWire
-├── hub.env               JBL_MAC, JBL_NAME, TTS_ENABLED, TTS_MAX_WORDS
+├── scene_rag.py          RAG pipeline: TF-IDF retrieval + Claude generation for semantic scene matching
+├── memory.py             Event log + diary + contextual memory for enhanced decision-making
+├── scheduler.py          Background job scheduler for recurring tasks (tips, reminders, etc.)
+├── hub.env               JBL_MAC, JBL_NAME, TTS_ENABLED, TTS_MAX_WORDS, NEO_API_KEY
 ├── bt_pair.py            Headless Bluetooth pairing helper (manual, not integrated)
+├── bt_presence.py        Bluetooth presence detection scanner (planned wiring)
+├── auth.py               API authentication utilities
+├── utils.py              Shared helpers (parsing, state management)
+├── backup.py             State/config backup utilities
+├── demo.py               Demo/test harness
 ├── requirements.txt      Hub Python deps
 ├── venv/                 Python virtual environment (shared by all services)
+│
+├── termux/
+│   ├── neo_mic.py        Termux microphone stream handler + VAD
+│   └── install.sh        Setup script for Termux dependencies
 │
 ├── piper/                Piper TTS binary + jenny-dioco voice (local only, gitignored)
 │   ├── piper/piper       Piper binary (aarch64)
 │   └── voices/en_GB-jenny_dioco-medium.onnx
+│
+├── neo-labs/             Experimental features (dashboard, advanced search, etc.)
+│   └── (various prototypes)
+│
+├── update_claude_md.py   Auto-sync CLAUDE.md with current architecture
 │
 └── wiz-lamp/
     ├── app.py            WiZ lamp Flask API (port 5000)
@@ -233,6 +251,31 @@ Speaks text via Piper (jenny-dioco) through JBL Flip 4. `device` defaults to `"j
 
 Scene guard: speech suppressed automatically during `movie`, `netflix`, `goodnight`, `sleep`, `dnd` scenes.
 
+### Voice — `POST /api/voice`
+
+```json
+{"audio_base64": "<raw PCM audio>", "sample_rate": 16000}
+```
+
+Accepts raw 16-bit mono PCM audio (from Termux microphone stream), transcribes via Whisper, sends to Claude for intent resolution, and dispatches hub actions. Returns:
+
+```json
+{"transcript": "...", "action": "/scene/...", "reason": "..."}
+```
+
+Used by `termux/neo_mic.py` to stream audio from Android device microphone to Neo via HTTP.
+
+### Event Hooks — `GET /event/<name>`
+
+Contextual triggers that check time/state before acting.
+
+| Endpoint | Condition | Action |
+|---|---|---|
+| `/event/swiggy` | 23:00–00:59 | `/lamp/alert` + TTS "Beta, you don't need maggi at midnight." |
+| `/event/swiggy` | any other time | 204 No Content (silent no-op) |
+
+Intended to be called from an iPhone Shortcut triggered on Swiggy app open.
+
 ### Shortcuts — `GET /shortcuts`
 
 Returns all scene/lamp/tv/spotify URLs pre-formatted for iOS Shortcuts setup.
@@ -314,19 +357,32 @@ Piper binary and voice model are in `piper/` (gitignored, device-local). Install
 
 ---
 
-## Voice Pipeline (`voice.py`)
+## Voice Pipeline (`voice.py` + Termux mic)
 
+**Architecture:**
+```
+Android device (Termux) → termux-microphone-record → neo_mic.py
+                                                    → POST /api/voice
+                                                    ↓
+                                        Whisper base (local, serialised)
+                                        ↓
+                                        Claude API (claude-sonnet-4-20250514)
+                                        ↓
+                                        JSON parse → GET hub endpoints
+```
+
+**Local Pipeline (older, currently inactive):**
 ```
 3.5mm mic → PyAudio (16kHz int16 mono)
           → WebRTC VAD (30ms frames, aggressiveness 0–3)
           → ring-buffer pre-speech padding (300ms)
           → silence detection (900ms ends utterance)
-          → Whisper base (local, serialised via semaphore to avoid OOM)
-          → Claude API (claude-sonnet-4-20250514)
+          → Whisper base
+          → Claude API
           → JSON parse → GET hub endpoints
 ```
 
-⚠️ **voice.service is crash-looping** (restart counter 442+). Root cause: `INPUT_DEVICE` is unset so PyAudio opens the system default input — which is the JBL Bluetooth mic (doesn't support mono ALSA capture). Fix: identify USB mic device index and set `INPUT_DEVICE=<n>` in `voice.env`. The USB mic is not appearing in `arecord -l` or PyAudio device list — needs investigation (may not be connected or may require a different ALSA config).
+**Current approach:** Termux microphone stream via `neo_mic.py` is preferred. The local `voice.py` pipeline is inactive due to USB mic device issues.
 
 Claude receives a system prompt built at startup from `scenes.json` + all hub routes. It responds with strict JSON only — no hardcoded phrase mapping anywhere.
 
@@ -355,6 +411,7 @@ Telegram bot running as `tgvoice.service`. Accepts messages from the allowlisted
 **Message handling:**
 - **Text messages** → Claude intent → hub endpoint(s) → reply with result
 - **Voice messages** (OGG) → ffmpeg → WAV → Whisper → Claude intent → hub → reply with transcript + result
+- **RAG fallback** — if Claude returns `action: null`, `scene_rag.run()` is called: TF-IDF retrieves top-3 scenes, Claude picks the best, scene is dispatched with a natural-language reply
 - **`/status` command** → live service health + device states (lamp, TV, Spotify, presence)
 
 **`/status` output:**
@@ -376,6 +433,38 @@ Config: reads `voice.env` (ANTHROPIC_API_KEY, WHISPER_MODEL, CLAUDE_MODEL) and `
 
 ---
 
+## Semantic Intelligence (`scene_rag.py`)
+
+Two-step RAG pipeline for vague user intents:
+
+1. **TF-IDF retrieval** — no external API calls; retrieves top-3 scenes from `SCENE_KB` (18 rich scene descriptions with synonym tags)
+2. **Claude generation** — one API call to pick the best match and compose a natural-language explanation
+
+Wired into `tgvoice.py` as a fallback when Claude intent returns `action: null`. Handles vague phrases like "something cozy" or "I want to dance" — retrieval finds relevant scenes, Claude picks one and explains why.
+
+---
+
+## Event Log & Memory (`memory.py`)
+
+Simple event log + diary system for contextual decision-making. Stores:
+- Scene activations + timestamps
+- Voice/text command intents
+- Tap-recorded diary entries (future: morning-briefing context)
+
+Used by future enhancements to add time-of-day bias and user preference learning.
+
+---
+
+## Scheduler (`scheduler.py`)
+
+Background job scheduler for recurring tasks:
+- Scheduled tips in Telegram bot
+- Future: morning briefing generation, reminder timing, circadian light control
+
+Uses APScheduler (job queue required for `python-telegram-bot`).
+
+---
+
 ## Key Design Decisions & Gotchas
 
 | Decision | Why |
@@ -389,8 +478,9 @@ Config: reads `voice.env` (ANTHROPIC_API_KEY, WHISPER_MODEL, CLAUDE_MODEL) and `
 | Presence is manual (leave scene / NFC tag) | No automatic detection yet; BT presence is planned |
 | TV token saved to `~/.smarthome/tv_token.json` | Persists across service restarts; TV only prompts for pairing once |
 | TTS is announcements-only, not scene activations | Too noisy for daily use — scenes call `set_current_scene()` for the scene guard only |
-| JBL = output only; USB mic = input | JBL mic tested but too noisy/muffled for VAD; keep separation |
+| JBL = output only; Termux mic = input | JBL mic too noisy; Termux provides clean Android device microphone stream over HTTP |
 | Piper is device-local, gitignored | 80MB binary + model; not appropriate for git; install script TBD |
+| Termux mic approach over USB | Avoids ALSA device detection hell; Termux client handles mic capture directly |
 
 ---
 
@@ -400,10 +490,10 @@ Config: reads `voice.env` (ANTHROPIC_API_KEY, WHISPER_MODEL, CLAUDE_MODEL) and `
 - Hub + lamp service on systemd, always running
 - All scenes, TV control, Spotify, NFC tags, beat sync
 
-### Stage 2 — Voice Intelligence ✅ Done (pipeline built, service broken)
-- `voice.py`: WebRTC VAD → Whisper → Claude API → hub
+### Stage 2 — Voice Intelligence ✅ Done (Termux mic now preferred)
+- `voice.py`: WebRTC VAD → Whisper → Claude API → hub (local pipeline, currently inactive)
+- `termux/neo_mic.py`: Termux Android microphone → HTTP `/api/voice` → Whisper → Claude → hub (new approach, active)
 - System prompt auto-generated from `scenes.json` + all endpoints
-- ⚠️ `voice.service` crash-looping — PyAudio opens JBL mic instead of USB mic (fix pending)
 
 ### Stage 3 — Telegram Text + Voice Control ✅ Done
 - `tgvoice.py`: Telegram bot accepts text commands and voice messages (OGG → Whisper → Claude → hub)
@@ -416,13 +506,23 @@ Config: reads `voice.env` (ANTHROPIC_API_KEY, WHISPER_MODEL, CLAUDE_MODEL) and `
 - `tts.py` with `/tts/on`, `/tts/off`, `/tts/status`, `POST /api/announce`
 - Scene guard suppresses speech during movie/sleep/dnd scenes
 
-### Stage 5 — Voice Layer Fix + Wake Word (Next)
-- Fix `voice.py` crash: identify correct USB mic device index, set `INPUT_DEVICE` in voice.env
-- Add "Hey Neo" wake word using `openWakeWord` (training scaffold already in `wakeword/`)
-- Consider ReSpeaker 4-mic USB array (~£20) for reliable room-scale pickup
-- TTS confirmation after voice commands ("Done, switching to movie mode")
+### Stage 5 — Semantic Intelligence ✅ Done
+- `scene_rag.py`: two-step RAG pipeline — TF-IDF retrieval (no API) + Claude generation (one call)
+- `SCENE_KB`: 18 scenes with rich descriptions + synonym tags as the document corpus
+- Wired into `tgvoice.py` as fallback when Claude intent returns null — handles vague phrases like "something cozy" or "I want to dance"
+- `/event/swiggy`: time-aware event hook (23:00–01:00 → lamp alert + TTS scold)
 
-### Stage 6 — Bluetooth Presence Detection (Planned)
+### Stage 6 — Event Log & Memory ✅ Done
+- `memory.py`: simple event log + diary system for contextual learning
+- Stores scene activations, voice intents, timestamps
+- Foundation for morning briefing and user preference learning
+
+### Stage 7 — Scheduler ✅ Done
+- `scheduler.py`: background job scheduling for recurring tasks
+- Integrated with `tgvoice.py` for scheduled tips (2-hour interval)
+- Infrastructure ready for morning briefing, reminders, circadian control
+
+### Stage 8 — Bluetooth Presence Detection (Planned)
 - `bt_pair.py` exists (headless BT pairing helper) but is not wired up
 - Plan: scan for phone MAC via `bluetoothctl`/`hcitool`
 - Arrival → "welcome home" scene; departure → `leave` scene
@@ -438,7 +538,6 @@ sudo systemctl status hub voice tgvoice wiz-lamp.service
 
 # Live logs
 sudo journalctl -u hub -f
-sudo journalctl -u voice -f
 sudo journalctl -u tgvoice -f
 
 # Restart a service after code change
@@ -452,13 +551,15 @@ curl http://localhost:5001/tv/status           # TV reachability
 curl http://localhost:5001/lamp/status         # lamp state
 curl http://localhost:5001/spotify/status      # Spotify state
 
+# Test voice endpoint (Termux mic simulation)
+curl -X POST http://localhost:5001/api/voice \
+  -H "Content-Type: application/json" \
+  -d '{"audio_base64": "...", "sample_rate": 16000}'
+
 # Run hub directly (outside systemd, useful for debugging)
 cd /home/anadivatsa/smarthome
 source venv/bin/activate
 python hub.py
-
-# Run voice directly
-python voice.py   # ANTHROPIC_API_KEY must be in environment or voice.env loaded
 ```
 
 ---

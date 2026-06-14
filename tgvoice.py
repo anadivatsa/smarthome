@@ -20,6 +20,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 import memory
 import backup
+import scene_rag
 
 # Env vars injected by systemd EnvironmentFile= (voice.env + notifier.env)
 BOT_TOKEN    = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -248,6 +249,21 @@ def dispatch(actions: list) -> list[str]:
     return results
 
 
+def _rag_fallback(transcript: str) -> tuple[list[str], str | None]:
+    """Try scene_rag when Claude returns no-op. Returns (result_lines, natural_reply)."""
+    try:
+        result = scene_rag.run(transcript)
+        scene = result.get("scene")
+        if not scene:
+            return [], None
+        log.info("RAG fallback → /scene/%s", scene)
+        lines = dispatch([{"action": f"/scene/{scene}", "reason": "semantic match"}])
+        return lines, result.get("reply")
+    except Exception as exc:
+        log.warning("RAG fallback failed: %s", exc)
+        return [], None
+
+
 # ---------------------------------------------------------------------------
 # /status helpers
 # ---------------------------------------------------------------------------
@@ -401,8 +417,14 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
     history, ctx = _memory_context(transcript)
     actions  = resolve_intent(transcript, history=history, mem_context=ctx)
-    results  = dispatch(actions)
-    reply    = f'🗣 "{transcript}"\n' + "\n".join(results)
+    if all(not a.get("action") for a in actions):
+        rag_lines, rag_reply = _rag_fallback(transcript)
+        results = rag_lines or dispatch(actions)
+        extra   = f"{rag_reply}\n" if rag_reply else ""
+    else:
+        results = dispatch(actions)
+        extra   = ""
+    reply = f'🗣 "{transcript}"\n{extra}' + "\n".join(results)
     try:
         memory.store_conversation("assistant", "\n".join(results))
     except Exception:
@@ -426,8 +448,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
     history, ctx = _memory_context(transcript)
     actions  = resolve_intent(transcript, history=history, mem_context=ctx)
-    results  = dispatch(actions)
-    reply    = f'💬 "{transcript}"\n' + "\n".join(results)
+    if all(not a.get("action") for a in actions):
+        rag_lines, rag_reply = _rag_fallback(transcript)
+        results = rag_lines or dispatch(actions)
+        extra   = f"{rag_reply}\n" if rag_reply else ""
+    else:
+        results = dispatch(actions)
+        extra   = ""
+    reply = f'💬 "{transcript}"\n{extra}' + "\n".join(results)
     try:
         memory.store_conversation("assistant", "\n".join(results))
     except Exception:

@@ -38,6 +38,7 @@ import re
 import tempfile
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 import requests
@@ -884,6 +885,22 @@ def route_api_announce():
 
 
 # ---------------------------------------------------------------------------
+# Event hooks
+# ---------------------------------------------------------------------------
+
+_SWIGGY_MSG = "Beta, you don't need maggi at midnight."
+
+@app.route("/event/swiggy", methods=["GET", "POST"])
+def route_event_swiggy():
+    hour = datetime.now().hour
+    if hour >= 23 or hour < 1:
+        _lamp("alert")
+        if _TTS_OK:
+            TTS.speak_async(_SWIGGY_MSG)
+        return jsonify({"triggered": True, "message": _SWIGGY_MSG})
+    return ("", 204)
+
+
 # TTS toggle / status endpoints
 # ---------------------------------------------------------------------------
 

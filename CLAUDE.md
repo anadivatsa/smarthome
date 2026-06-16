@@ -1,7 +1,15 @@
 # Neo — Smart Home Hub (CLAUDE.md)
 
 > Drop this file gives any Claude Code session instant full context about the Neo smart home system.
-> Last updated: 2026-06-14 (RAG scene indexing, wakeword installer, memory/scheduler enhancements, auth module cleanup)
+> Last updated: 2026-06-16 (RAG self-knowledge finalized, ASK_NEO intent live in Telegram bot, FTS5 indexing complete)
+
+---
+
+## Before You Start
+
+Check `skills/` for relevant guidance before beginning any task.
+`skills/lessons-learned/SKILL.md` and `skills/before-shipping/SKILL.md` apply to almost everything.
+`skills/diagnose/check_services.sh` is the first step for any debugging or sitrep request.
 
 ---
 
@@ -94,6 +102,7 @@ smarthome/
 ├── scene_rag.py          RAG pipeline: TF-IDF retrieval + Claude generation for semantic scene matching
 ├── memory.py             Event log + diary + contextual memory for enhanced decision-making
 ├── scheduler.py          Background job scheduler for recurring tasks (tips, reminders, etc.)
+├── rag_index.py          RAG document indexing and FTS5 corpus builder for self-knowledge
 ├── hub.env               JBL_MAC, JBL_NAME, TTS_ENABLED, TTS_MAX_WORDS, NEO_API_KEY, BT_PHONE_MAC
 ├── bt_pair.py            Headless Bluetooth pairing helper (manual, not integrated)
 ├── bt_presence.py        Bluetooth presence detection scanner (enabled — detects phone arrival/departure)
@@ -101,9 +110,8 @@ smarthome/
 ├── utils.py              Shared helpers (parsing, state management)
 ├── backup.py             State/config backup utilities
 ├── demo.py               Demo/test harness
-├── rag_index.py          RAG document indexing and TF-IDF corpus builder
-├── requirements.txt      Hub Python deps
 ├── update_claude_md.py   Auto-sync CLAUDE.md with current architecture
+├── requirements.txt      Hub Python deps
 ├── venv/                 Python virtual environment (shared by all services)
 │
 ├── termux/
@@ -118,7 +126,7 @@ smarthome/
 │   └── install.sh        Setup script for wake-word engine
 │
 ├── tasks/                Background task scripts
-│   └── rag_reindex.py    Periodic RAG corpus rebuild
+│   └── rag_reindex.py    Periodic RAG corpus rebuild (weekly Sunday 4am)
 │
 ├── neo-labs/             Experimental features (dashboard, advanced search, etc.)
 │   └── (various prototypes)
@@ -419,6 +427,7 @@ Telegram bot running as `tgvoice.service`. Accepts messages from the allowlisted
 - **Text messages** → Claude intent → hub endpoint(s) → reply with result
 - **Voice messages** (OGG) → ffmpeg → WAV → Whisper → Claude intent → hub → reply with transcript + result
 - **RAG fallback** — if Claude returns `action: null`, `scene_rag.run()` is called: TF-IDF retrieves top-3 scenes, Claude picks the best, scene is dispatched with a natural-language reply
+- **ASK_NEO intent** — Claude detects self-knowledge questions and routes to FTS5 index over CLAUDE.md, scenes.json, docstrings, and recent diary entries; replies with sourced answers
 - **`/status` command** → live service health + device states (lamp, TV, Spotify, presence)
 
 **`/status` output:**
@@ -531,6 +540,7 @@ Currently enabled; replaces manual `leave` scene trigger. Integrates with `prese
 | JBL = output only; Termux mic = input | JBL mic too noisy; Termux provides clean Android device microphone stream over HTTP |
 | Piper is device-local, gitignored | 80MB binary + model; not appropriate for git; install script TBD |
 | Termux mic approach over USB | Avoids ALSA device detection hell; Termux client handles mic capture directly |
+| Self-knowledge RAG uses FTS5 + diary | Always appends recent diary entries to context for temporal awareness |
 | RAG corpus indexed in-memory | No DB overhead; TF-IDF built at startup from `scenes.json` scene descriptions + synonym tags |
 
 ---
@@ -570,59 +580,4 @@ Currently enabled; replaces manual `leave` scene trigger. Integrates with `prese
 
 ### Stage 7 — Scheduler ✅ Done
 - `scheduler.py`: background job scheduling for recurring tasks
-- Integrated with `tgvoice.py` for scheduled tips (2-hour interval)
-- Infrastructure ready for morning briefing, reminders, circadian control
-
-### Stage 8 — Bluetooth Presence Detection ✅ Done
-- `bt_presence.py`: integrated into hub.py as background daemon
-- Scans for phone MAC configured in hub.env (`BT_PHONE_MAC`)
-- Arrival → welcome scene; departure → leave scene
-- Replaced manual NFC-tag leave trigger; fully automatic
-
-### Stage 9 — Self-Knowledge RAG ✅ Done
-- `rag_index.py`: indexes CLAUDE.md (by heading), scenes.json, Python docstrings, and .env key names into `memory.db` FTS5 with `source_type` column
-- `tasks/rag_reindex.py`: weekly Sunday 4am re-index via scheduler
-- ASK_NEO intent added to `tgvoice.py`: Claude detects self-knowledge questions and routes to `_neo_rag_answer()` which runs FTS5 + always appends recent diary entries, then answers via Claude citing sources
-
----
-
-## Common Dev Commands
-
-```bash
-# Service status
-sudo systemctl status hub voice tgvoice wiz-lamp.service
-
-# Live logs
-sudo journalctl -u hub -f
-sudo journalctl -u tgvoice -f
-
-# Restart a service after code change
-sudo systemctl restart hub
-
-# Quick smoke tests
-curl http://localhost:5001/                    # hub health
-curl http://localhost:5001/scenes              # list scenes
-curl http://localhost:5001/scene/movie         # full scene test
-curl http://localhost:5001/tv/status           # TV reachability
-curl http://localhost:5001/lamp/status         # lamp state
-curl http://localhost:5001/spotify/status      # Spotify state
-
-# Test voice endpoint (Termux mic simulation)
-curl -X POST http://localhost:5001/api/voice \
-  -H "Content-Type: application/json" \
-  -d '{"audio_base64": "...", "sample_rate": 16000}'
-
-# Run hub directly (outside systemd, useful for debugging)
-cd /home/anadivatsa/smarthome
-source venv/bin/activate
-python hub.py
-```
-
----
-
-## Environment Files
-
-| File | Contents | Committed? |
-|---|---|---|
-| `voice.env` | `ANTHROPIC_API_KEY`, model/VAD tuning | **No** (gitignored) |
-| `hub.env`
+-

@@ -809,6 +809,8 @@ def route_shortcuts():
 @app.route("/api/info")
 @limiter.limit("30/minute")
 def route_api_info():
+    # OTA BREAK TEST — deliberate 500 to trigger health-check rollback demo
+    return jsonify({"error": "deliberate_break_for_ota_demo"}), 500
     import subprocess as _sp  # noqa: PLC0415
     def _svc(name):
         try:

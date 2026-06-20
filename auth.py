@@ -27,6 +27,8 @@ _PUBLIC = frozenset([
     "/spotify/callback",
     "/spotify/exchange",
     "/shortcuts",
+    "/termux/install",
+    "/termux/neo_mic",
 ])
 
 

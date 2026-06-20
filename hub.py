@@ -1135,6 +1135,26 @@ def route_api_diary():
 
 
 # ---------------------------------------------------------------------------
+# Termux setup endpoints — serve install.sh + neo_mic.py over LAN
+# ---------------------------------------------------------------------------
+
+@app.route("/termux/install")
+def route_termux_install():
+    """Serve install.sh so OnePlus can bootstrap with: curl .../termux/install | bash"""
+    return send_from_directory(
+        Path(__file__).parent / "termux", "install.sh", mimetype="text/plain"
+    )
+
+
+@app.route("/termux/neo_mic")
+def route_termux_neo_mic():
+    """Serve neo_mic.py so install.sh can download it."""
+    return send_from_directory(
+        Path(__file__).parent / "termux", "neo_mic.py", mimetype="text/plain"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Health / index
 # ---------------------------------------------------------------------------
 

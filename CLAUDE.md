@@ -1,7 +1,7 @@
 # Neo — Smart Home Hub (CLAUDE.md)
 
 > Drop this file gives any Claude Code session instant full context about the Neo smart home system.
-> Last updated: 2026-06-16 (RAG self-knowledge finalized, ASK_NEO intent live in Telegram bot, FTS5 indexing complete)
+> Last updated: 2026-06-20 (audit system live; institutionalized skills/ with diagnostic utilities and lessons learned)
 
 ---
 
@@ -15,7 +15,7 @@ Check `skills/` for relevant guidance before beginning any task.
 
 ## What This Is
 
-A Raspberry Pi (hostname **Neo**, IP **192.168.1.8**) runs a multi-service smart home automation hub 24/7. It controls a Samsung TV and a WiZ smart bulb through a central Flask HTTP API, with two voice intelligence layers: a local VAD pipeline (`voice.py` via Termux microphone) and a Telegram bot (`tgvoice.py`) that accepts both text and voice messages via Whisper + Claude API. A JBL Flip 4 Bluetooth speaker is connected for TTS audio output via Piper (neural, offline).
+A Raspberry Pi (hostname **Neo**, IP **192.168.1.8**) runs a multi-service smart home automation hub 24/7. It controls a Samsung TV and a WiZ smart bulb through a central Flask HTTP API, with two voice intelligence layers: a local VAD pipeline (`voice.py` via Termux microphone) and a Telegram bot (`tgvoice.py`) that accepts both text and voice messages via Whisper + Claude API. A JBL Flip 4 Bluetooth speaker is connected for TTS audio output via Piper (neural, offline). An independent audit system periodically samples Claude's behaviour across 30 questions to detect model drift.
 
 ---
 
@@ -55,6 +55,7 @@ A Raspberry Pi (hostname **Neo**, IP **192.168.1.8**) runs a multi-service smart
 │  tgvoice.py ────────────────────────────── │  ← Telegram text/voice → Whisper → Claude API → hub
 │  neo_mic.py (Termux node) ──────────────── │  ← audio stream handler for termux-microphone-record
 │  bt_presence.py ────────────────────────── │  ← BT scanner for phone arrival/departure
+│  audit.py ──────────────────────────────── │  ← Claude model drift detection (30-question battery)
 │                                            │
 │  ┌──────────────────────────────────────┐  │
 │  │   hub.py  :5001  (central API)       │  │
@@ -111,8 +112,18 @@ smarthome/
 ├── backup.py             State/config backup utilities
 ├── demo.py               Demo/test harness
 ├── update_claude_md.py   Auto-sync CLAUDE.md with current architecture
+├── audit.py              Claude model drift detection — 30-question battery sampled every 72h
+├── audit_battery.json    Immutable 30-question baseline for audit system
 ├── requirements.txt      Hub Python deps
 ├── venv/                 Python virtual environment (shared by all services)
+│
+├── skills/               Institutional knowledge, checklists, and diagnostic utilities
+│   ├── architecture-philosophy/SKILL.md   Design principles and rationale
+│   ├── before-shipping/SKILL.md           Pre-deployment checklist and review criteria
+│   ├── diagnose/SKILL.md                  Troubleshooting methodology
+│   ├── diagnose/check_services.sh         One-command service health and diagnostics
+│   ├── interaction-style/SKILL.md         Communication style for Neo (voice/text)
+│   └── lessons-learned/SKILL.md           Historical gotchas, failure modes, anti-patterns
 │
 ├── termux/
 │   ├── neo_mic.py        Termux microphone stream handler + VAD
@@ -126,7 +137,9 @@ smarthome/
 │   └── install.sh        Setup script for wake-word engine
 │
 ├── tasks/                Background task scripts
-│   └── rag_reindex.py    Periodic RAG corpus rebuild (weekly Sunday 4am)
+│   ├── morning_brief.py  Morning briefing generation
+│   ├── rag_reindex.py    Periodic RAG corpus rebuild (weekly Sunday 4am)
+│   └── anthropic_audit.py Scheduled audit runner (every 72h at 03:00)
 │
 ├── neo-labs/             Experimental features (dashboard, advanced search, etc.)
 │   └── (various prototypes)
@@ -457,7 +470,7 @@ Neo can answer questions about its own architecture, configuration, and history 
 - `docs` — CLAUDE.md chunked by `##` headings (~400 words/chunk) + Python file docstrings
 - `scene_config` — `scenes.json` as one summary chunk + per-scene detail chunks
 - `env_keys` — KEY names only from all `.env` files (values never stored)
-- `diary` — Neo's nightly diary entries (written by `tasks/neos_diary.py`)
+- `diary` — Neo's nightly diary entries (written by `tasks/morning_brief.py`)
 
 **Indexing:** Run `python rag_index.py` once to populate; adds `source_type` column to `memories` table. Weekly re-index runs automatically via `tasks/rag_reindex.py` (Sunday 4am).
 
@@ -523,6 +536,39 @@ Currently enabled; replaces manual `leave` scene trigger. Integrates with `prese
 
 ---
 
+## Claude Model Drift Audit (`audit.py`)
+
+Independent longitudinal sampling system that detects model behaviour changes across Anthropic API updates.
+
+**What it does:**
+- Asks a fixed 30-question battery to Claude every 72 hours (scheduled at 03:00 via `tasks/anthropic_audit.py`)
+- Compares each response against the immutable baseline run and the immediately preceding run
+- Scores drift 0–10 per question; sends Telegram alerts if any question drifts > 6 or session average > 4
+- Builds a permanent record of how Claude actually behaves independent of changelogs
+
+**Storage:** `memory.db` tables:
+- `anthropic_audit` — all runs (never truncated)
+- `audit_baseline` — immutable baseline (SQL triggers prevent UPDATE/DELETE)
+- `audit_model_transitions` — version change events
+- `audit_meta` — battery SHA-256 hash, timestamps, last report
+
+**Rules — non-negotiable:**
+- **Never modify `audit_battery.json` after baseline.** File hash stored at baseline; any change triggers alert and blocks all subsequent runs.
+- **Never modify `audit_baseline` table.** SQL triggers abort any UPDATE/DELETE — baseline is immutable anchor.
+- **Never soften comparison engine system prompt.** Hardcoded adversarial framing in `audit.py` (not config) — "You are an auditor, not a defender" is deliberate.
+- **Never truncate `anthropic_audit` table.** Runs from 18 months from now compared against baseline is the actual output of this system.
+
+**Workflow:**
+1. Fill in 30 question fields in `audit_battery.json`
+2. Run `python3 audit.py --baseline` — runs all questions, stores immutable baseline, stores battery hash, enables 72h schedule
+3. Scheduled runs happen automatically via `tasks/anthropic_audit.py` (daily at 03:00, internal 72h interval check)
+4. Manual run: `python3 audit.py --force`
+5. Infrastructure check: `python3 audit.py --dry-run`
+
+**Alerts:** Telegram notification when drift_score > 6 on any question, session average > 4, or model version changes.
+
+---
+
 ## Key Design Decisions & Gotchas
 
 | Decision | Why |
@@ -532,52 +578,4 @@ Currently enabled; replaces manual `leave` scene trigger. Integrates with `prese
 | Beat sync is BPM-driven, not timestamp-driven | Spotify audio analysis API restricted to pre-Nov-2024 apps |
 | `wiz-lamp.service` has 3s ExecStartPre sleep | Lamp UDP fails if network isn't settled at boot |
 | Whisper semaphore in voice.py | Only one transcription at a time — prevents OOM on Pi |
-| Voice pipeline uses no hardcoded phrases | Claude handles all intent — add new scenes to `scenes.json` and they're instantly reachable by voice |
-| Non-blocking scene dispatch | Scene execution in background threads; endpoints return immediately; prevents request timeout |
-| BT presence replaces manual leave trigger | Automatic phone detection; configured MAC in hub.env; no manual NFC tag required for departure |
-| TV token saved to `~/.smarthome/tv_token.json` | Persists across service restarts; TV only prompts for pairing once |
-| TTS is announcements-only, not scene activations | Too noisy for daily use — scenes call `set_current_scene()` for the scene guard only |
-| JBL = output only; Termux mic = input | JBL mic too noisy; Termux provides clean Android device microphone stream over HTTP |
-| Piper is device-local, gitignored | 80MB binary + model; not appropriate for git; install script TBD |
-| Termux mic approach over USB | Avoids ALSA device detection hell; Termux client handles mic capture directly |
-| Self-knowledge RAG uses FTS5 + diary | Always appends recent diary entries to context for temporal awareness |
-| RAG corpus indexed in-memory | No DB overhead; TF-IDF built at startup from `scenes.json` scene descriptions + synonym tags |
-
----
-
-## Roadmap
-
-### Stage 1 — Core Hub ✅ Done
-- Hub + lamp service on systemd, always running
-- All scenes, TV control, Spotify, NFC tags, beat sync
-
-### Stage 2 — Voice Intelligence ✅ Done (Termux mic now preferred)
-- `voice.py`: WebRTC VAD → Whisper → Claude API → hub (local pipeline, currently inactive)
-- `termux/neo_mic.py`: Termux Android microphone → HTTP `/api/voice` → Whisper → Claude → hub (new approach, active)
-- System prompt auto-generated from `scenes.json` + all endpoints
-
-### Stage 3 — Telegram Text + Voice Control ✅ Done
-- `tgvoice.py`: Telegram bot accepts text commands and voice messages (OGG → Whisper → Claude → hub)
-- Same system prompt as `voice.py`; allowlisted to single chat ID
-- `tgvoice.service` active
-
-### Stage 4 — JBL Audio Output ✅ Done
-- JBL Flip 4 paired and auto-connected via `bt_jbl.service`
-- Piper TTS (jenny-dioco, 0.9× speed) installed and working
-- `tts.py` with `/tts/on`, `/tts/off`, `/tts/status`, `POST /api/announce`
-- Scene guard suppresses speech during movie/sleep/dnd scenes
-
-### Stage 5 — Semantic Intelligence ✅ Done
-- `scene_rag.py`: two-step RAG pipeline — TF-IDF retrieval (no API) + Claude generation (one call)
-- `SCENE_KB`: 18 scenes with rich descriptions + synonym tags as the document corpus
-- Wired into `tgvoice.py` as fallback when Claude intent returns null — handles vague phrases like "something cozy" or "I want to dance"
-- `/event/swiggy`: time-aware event hook (23:00–01:00 → lamp alert + TTS scold)
-
-### Stage 6 — Event Log & Memory ✅ Done
-- `memory.py`: simple event log + diary system for contextual learning
-- Stores scene activations, voice intents, timestamps
-- Foundation for morning briefing and user preference learning
-
-### Stage 7 — Scheduler ✅ Done
-- `scheduler.py`: background job scheduling for recurring tasks
--
+| Voice pipeline uses no hardcoded phrases | All intents derived from

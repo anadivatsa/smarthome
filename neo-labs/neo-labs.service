@@ -1,0 +1,19 @@
+[Unit]
+Description=Neo Labs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=anadivatsa
+WorkingDirectory=/home/anadivatsa/smarthome/neo-labs
+ExecStart=/home/anadivatsa/smarthome/venv/bin/python app.py
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/home/anadivatsa/smarthome/voice.env
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

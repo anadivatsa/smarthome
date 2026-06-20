@@ -13,7 +13,7 @@ echo "=== Hey Neo Wake Word — Install & Train ==="
 echo "[1/9] Installing system packages..."
 # ---------------------------------------------------------------------------
 sudo apt-get install -y --no-install-recommends \
-    portaudio19-dev python3-dev libatlas-base-dev git unzip wget
+    portaudio19-dev python3-dev libopenblas-dev git unzip wget
 
 # ---------------------------------------------------------------------------
 echo "[2/9] Creating virtual environment..."
@@ -36,10 +36,10 @@ echo "[3/9] Installing runtime Python packages..."
 "$PIP" install --quiet \
     "onnxruntime>=1.20.0,<2" \
     "numpy>=1.24.0,<3" \
-    vosk>=0.3.45 \
-    pyaudio>=0.2.14 \
-    requests>=2.31.0 \
-    python-dotenv>=1.0.0 \
+    "vosk>=0.3.45" \
+    "pyaudio>=0.2.14" \
+    "requests>=2.31.0" \
+    "python-dotenv>=1.0.0" \
     scipy \
     scikit-learn
 
@@ -50,10 +50,10 @@ MODEL_DIR="$DIR/vosk-model-small-en-us"
 if [ ! -d "$MODEL_DIR" ]; then
     cd "$DIR"
     wget -q --show-progress \
-        https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.22.zip \
+        https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip \
         -O vosk-model.zip
     unzip -q vosk-model.zip
-    mv vosk-model-small-en-us-0.22 vosk-model-small-en-us
+    mv vosk-model-small-en-us-0.15 vosk-model-small-en-us
     rm vosk-model.zip
     echo "      Vosk model ready."
 else
@@ -80,7 +80,10 @@ fi
 # ---------------------------------------------------------------------------
 echo "[5/9] Installing training dependencies..."
 # ---------------------------------------------------------------------------
-"$PIP" install --quiet \
+# torch is large (~700 MB wheel); pip's default /tmp tmpfs (3.9 GB RAM-backed)
+# can fill up on first download. Use main-filesystem scratch dir instead.
+mkdir -p "$DIR/tmp"
+TMPDIR="$DIR/tmp" "$PIP" install --quiet \
     piper-sample-generator \
     torch \
     torchaudio \
@@ -91,7 +94,19 @@ echo "[5/9] Installing training dependencies..."
     pyyaml \
     "datasets<3" \
     webrtcvad-wheels \
-    tqdm
+    tqdm \
+    torchinfo \
+    torchmetrics \
+    pronouncing \
+    acoustics
+rm -rf "$DIR/tmp"
+
+# acoustics 0.2.6 references scipy.special.sph_harm which was removed in scipy 1.15.
+# Patch its __init__.py to skip the broken directivity submodule (unused by openwakeword).
+ACOUSTICS_INIT=$("$PY" -c "import acoustics, os; print(os.path.join(os.path.dirname(acoustics.__file__), '__init__.py'))" 2>/dev/null || true)
+if [ -n "$ACOUSTICS_INIT" ] && grep -q "^import acoustics.directivity" "$ACOUSTICS_INIT" 2>/dev/null; then
+    sed -i 's/^import acoustics\.directivity$/try:\n    import acoustics.directivity\nexcept ImportError:\n    pass  # sph_harm removed in scipy 1.15/' "$ACOUSTICS_INIT"
+fi
 
 # ---------------------------------------------------------------------------
 echo "[6/9] Downloading Piper voice models for TTS diversity (~180 MB total)..."
@@ -136,7 +151,41 @@ if not os.path.exists(p):
 # ---------------------------------------------------------------------------
 echo "[7/9] Writing training config..."
 # ---------------------------------------------------------------------------
-PSG_PATH=$("$PY" -c "import piper_sample_generator, os; print(os.path.dirname(piper_sample_generator.__file__))")
+# openwakeword expects a generate_samples.py file on sys.path; the pip package
+# puts the function in __main__.py. Create a shim in TRAIN_DIR so the import works.
+if [ ! -f "$TRAIN_DIR/generate_samples.py" ]; then
+    echo "from piper_sample_generator.__main__ import generate_samples" > "$TRAIN_DIR/generate_samples.py"
+fi
+PSG_PATH="$TRAIN_DIR"
+
+# piper_sample_generator.__main__ imports piper_train.vits.commons (VITS math utils)
+# which is not on PyPI. Create a minimal stub with the two functions it uses.
+SITE_PKGS=$("$PY" -c "import site; print(site.getsitepackages()[0])")
+PT_COMMONS="$SITE_PKGS/piper_train/vits/commons.py"
+if [ ! -f "$PT_COMMONS" ]; then
+    mkdir -p "$SITE_PKGS/piper_train/vits"
+    touch "$SITE_PKGS/piper_train/__init__.py" "$SITE_PKGS/piper_train/vits/__init__.py"
+    cat > "$PT_COMMONS" << 'PYEOF'
+import torch
+import torch.nn.functional as F
+
+def sequence_mask(length, max_length=None):
+    if max_length is None:
+        max_length = length.max()
+    x = torch.arange(max_length, dtype=length.dtype, device=length.device)
+    return x.unsqueeze(0) < length.unsqueeze(1)
+
+def generate_path(duration, mask):
+    b, _, t_y, t_x = mask.shape
+    cum_duration = torch.cumsum(duration, -1)
+    cum_duration_flat = cum_duration.view(b * t_x)
+    path = sequence_mask(cum_duration_flat, t_y).to(mask.dtype)
+    path = path.view(b, t_x, t_y)
+    path = path - F.pad(path, [0, 0, 1, 0, 0, 0])[:, :-1]
+    path = path.transpose(1, 2).unsqueeze(1).contiguous() * mask
+    return path
+PYEOF
+fi
 
 cat > "$TRAIN_DIR/hey_neo_config.yaml" <<YAML
 model_name: "hey_neo"
@@ -183,6 +232,9 @@ YAML
 echo "[8/9] Training 'Hey Neo' model (this takes 3-5 hours on Pi 4 CPU)..."
 # ---------------------------------------------------------------------------
 cd "$TRAIN_DIR"
+
+# our generate_samples.py shim reads voice paths from this env var
+export PIPER_VOICE_PATHS="${VOICES_DIR}/en_US-lessac-medium.onnx,${VOICES_DIR}/en_US-ryan-medium.onnx,${VOICES_DIR}/en_GB-alan-medium.onnx"
 
 echo "  Step 8a: Generating TTS clips..."
 "$PY" -m openwakeword.train \

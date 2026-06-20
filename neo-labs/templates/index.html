@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Neo Labs</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:       #0d0d0d;
+    --card:     #141414;
+    --border:   #242424;
+    --accent:   #7c3aed;
+    --accent2:  #a855f7;
+    --text:     #e5e5e5;
+    --muted:    #666;
+    --green:    #22c55e;
+    --red:      #ef4444;
+    --yellow:   #eab308;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+    min-height: 100vh;
+  }
+
+  header {
+    padding: 28px 20px 20px;
+    text-align: center;
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 1.9rem; font-weight: 800; letter-spacing: -0.5px; }
+  header h1 span { color: var(--accent2); }
+  header p { color: var(--muted); font-size: 0.82rem; margin-top: 4px; letter-spacing: 0.5px; text-transform: uppercase; }
+
+  main {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 24px 16px 48px;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+  @media (min-width: 768px) {
+    main { grid-template-columns: 1fr 1fr; }
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 22px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .card-header { display: flex; flex-direction: column; gap: 4px; }
+  .card-title { font-size: 1.1rem; font-weight: 700; }
+  .card-desc { color: var(--muted); font-size: 0.83rem; }
+
+  label { font-size: 0.82rem; color: var(--muted); display: block; margin-bottom: 5px; }
+
+  textarea, input[type="text"] {
+    width: 100%;
+    background: #0d0d0d;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 0.9rem;
+    padding: 10px 12px;
+    resize: vertical;
+    transition: border-color 0.15s;
+    outline: none;
+  }
+  textarea:focus, input[type="text"]:focus { border-color: var(--accent); }
+  textarea { min-height: 80px; }
+
+  .btn {
+    width: 100%;
+    background: var(--accent);
+    border: none;
+    border-radius: 8px;
+    color: #fff;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.9rem;
+    font-weight: 600;
+    padding: 11px;
+    transition: background 0.15s, opacity 0.15s;
+  }
+  .btn:hover:not(:disabled) { background: var(--accent2); }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .toggle-link {
+    background: none;
+    border: none;
+    color: var(--accent2);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.82rem;
+    padding: 0;
+    text-align: left;
+  }
+  .toggle-link:hover { text-decoration: underline; }
+
+  .result {
+    display: none;
+    background: #0d0d0d;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    font-size: 0.88rem;
+  }
+  .result.visible { display: block; }
+
+  .spinner {
+    display: none;
+    width: 20px; height: 20px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent2);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    margin: 0 auto;
+  }
+  .spinner.visible { display: block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Result components */
+  .winner-badge {
+    display: inline-block;
+    background: var(--accent);
+    border-radius: 6px;
+    color: #fff;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    padding: 3px 10px;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+  .verdict { font-weight: 600; margin-bottom: 6px; }
+  .reasoning { color: #bbb; }
+  .caveat { color: var(--muted); font-size: 0.82rem; margin-top: 8px; font-style: italic; }
+
+  .score-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .score-label { width: 90px; font-size: 0.8rem; color: var(--muted); flex-shrink: 0; }
+  .score-bar-wrap { flex: 1; background: var(--border); border-radius: 4px; height: 6px; overflow: hidden; }
+  .score-bar { height: 100%; border-radius: 4px; background: var(--accent2); transition: width 0.4s ease; }
+  .score-num { width: 28px; font-size: 0.82rem; font-weight: 700; text-align: right; }
+  .score-note { color: var(--muted); font-size: 0.8rem; margin-bottom: 12px; padding-left: 100px; }
+
+  .overall-score {
+    font-size: 2.2rem;
+    font-weight: 800;
+    color: var(--accent2);
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+  .overall-label { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; margin-bottom: 10px; }
+  .verdict-line { font-weight: 600; margin-bottom: 12px; }
+
+  .rewrite-label { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; margin-bottom: 6px; margin-top: 14px; }
+  .rewrite-text { color: #ddd; font-style: italic; border-left: 2px solid var(--accent); padding-left: 10px; }
+
+  .roast-text { color: #ddd; margin-bottom: 12px; line-height: 1.6; }
+  .traits-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .trait-tag {
+    background: #1f1f2e;
+    border: 1px solid #3b2f6e;
+    border-radius: 20px;
+    color: #c084fc;
+    font-size: 0.78rem;
+    padding: 3px 10px;
+  }
+
+  .rivalry-section { margin-bottom: 14px; }
+  .rivalry-city { font-weight: 700; color: var(--accent2); margin-bottom: 4px; font-size: 0.85rem; text-transform: uppercase; }
+  .rivalry-roast { color: #ddd; font-size: 0.88rem; }
+  .rivalry-winner {
+    background: linear-gradient(135deg, #1e1040, #2e1065);
+    border: 1px solid #4c1d95;
+    border-radius: 8px;
+    padding: 12px;
+    margin-top: 12px;
+    text-align: center;
+  }
+  .rivalry-winner-label { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; margin-bottom: 4px; }
+  .rivalry-winner-name { font-size: 1.1rem; font-weight: 800; color: var(--accent2); }
+  .rivalry-winner-reason { color: #bbb; font-size: 0.82rem; margin-top: 4px; }
+
+  .neg-number {
+    font-size: 2rem;
+    font-weight: 800;
+    color: var(--green);
+    margin-bottom: 2px;
+  }
+  .neg-label { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; margin-bottom: 12px; }
+  .neg-opening {
+    background: #0f1f0f;
+    border: 1px solid #1a3a1a;
+    border-radius: 8px;
+    color: #86efac;
+    font-style: italic;
+    font-size: 0.9rem;
+    line-height: 1.6;
+    padding: 12px;
+    margin-bottom: 12px;
+  }
+  .neg-opening::before { content: '"'; }
+  .neg-opening::after  { content: '"'; }
+  .neg-section-label { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; margin-bottom: 4px; }
+  .neg-rationale { color: #bbb; font-size: 0.85rem; margin-bottom: 12px; }
+  .neg-fallback { color: var(--muted); font-size: 0.85rem; }
+  .neg-fallback strong { color: var(--yellow); }
+
+  .error-msg { color: var(--red); font-size: 0.85rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Neo <span>Labs</span></h1>
+  <p>Powered by Claude</p>
+</header>
+
+<main>
+
+  <!-- ── Settle This ── -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">⚖️ Settle This</div>
+      <div class="card-desc">Two sides. One verdict. No mercy.</div>
+    </div>
+    <div>
+      <label>Side A</label>
+      <textarea id="settle-a" placeholder="Paste your argument here…" rows="3"></textarea>
+    </div>
+    <div>
+      <label>Side B</label>
+      <textarea id="settle-b" placeholder="Paste their argument here…" rows="3"></textarea>
+    </div>
+    <button class="btn" onclick="runSettle()">Settle It</button>
+    <div class="spinner" id="settle-spin"></div>
+    <div class="result" id="settle-result"></div>
+  </div>
+
+  <!-- ── Grade My Bit ── -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">🎤 Grade My Bit</div>
+      <div class="card-desc">Paste a standup joke. Get brutally honest feedback.</div>
+    </div>
+    <div>
+      <label>The joke</label>
+      <textarea id="grade-joke" placeholder="Type or paste your joke here…" rows="5"></textarea>
+    </div>
+    <button class="btn" onclick="runGrade()">Grade It</button>
+    <div class="spinner" id="grade-spin"></div>
+    <div class="result" id="grade-result"></div>
+  </div>
+
+  <!-- ── City Wars ── -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">🏙️ City Wars</div>
+      <div class="card-desc">Roast a city. Or pit two against each other.</div>
+    </div>
+    <div>
+      <label>Your city</label>
+      <input type="text" id="city-a" placeholder="e.g. Mumbai, Delhi, Bengaluru…">
+    </div>
+    <div id="rival-wrap" style="display:none">
+      <label>Rival city</label>
+      <input type="text" id="city-b" placeholder="e.g. Hyderabad, Pune…">
+    </div>
+    <button class="toggle-link" id="rival-toggle" onclick="toggleRival()">+ Add rival city</button>
+    <button class="btn" onclick="runCity()">Roast</button>
+    <div class="spinner" id="city-spin"></div>
+    <div class="result" id="city-result"></div>
+  </div>
+
+  <!-- ── Negotiate This ── -->
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">💼 Negotiate This</div>
+      <div class="card-desc">Paste your offer. Get the exact words and number to use.</div>
+    </div>
+    <div>
+      <label>Offer details</label>
+      <textarea id="neg-offer" placeholder="e.g. Offered 18 LPA, 2 years exp, SDE1 at fintech in Bangalore, current CTC 14 LPA…" rows="5"></textarea>
+    </div>
+    <button class="btn" onclick="runNegotiate()">Get My Counter</button>
+    <div class="spinner" id="neg-spin"></div>
+    <div class="result" id="neg-result"></div>
+  </div>
+
+</main>
+
+<script>
+function showSpinner(id, show) {
+  document.getElementById(id).classList.toggle('visible', show);
+}
+function setResult(id, html) {
+  const el = document.getElementById(id);
+  el.innerHTML = html;
+  el.classList.add('visible');
+}
+function setBtn(card, disabled) {
+  document.querySelector(`.card:nth-child(${card}) .btn`).disabled = disabled;
+}
+
+async function post(url, body) {
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  return r.json();
+}
+
+// ── Settle This ──
+async function runSettle() {
+  const a = document.getElementById('settle-a').value.trim();
+  const b = document.getElementById('settle-b').value.trim();
+  if (!a || !b) return;
+  showSpinner('settle-spin', true);
+  setBtn(1, true);
+  document.getElementById('settle-result').classList.remove('visible');
+  const d = await post('/api/settle', {side_a: a, side_b: b});
+  showSpinner('settle-spin', false);
+  setBtn(1, false);
+  if (d.error) { setResult('settle-result', `<span class="error-msg">${d.error}</span>`); return; }
+  const winnerLabel = d.winner === 'A' ? 'Side A Wins' : d.winner === 'B' ? 'Side B Wins' : 'Draw';
+  setResult('settle-result', `
+    <div class="winner-badge">${winnerLabel}</div>
+    <div class="verdict">${d.verdict}</div>
+    <div class="reasoning">${d.reasoning}</div>
+    ${d.caveat ? `<div class="caveat">To be fair: ${d.caveat}</div>` : ''}
+  `);
+}
+
+// ── Grade My Bit ──
+async function runGrade() {
+  const joke = document.getElementById('grade-joke').value.trim();
+  if (!joke) return;
+  showSpinner('grade-spin', true);
+  setBtn(2, true);
+  document.getElementById('grade-result').classList.remove('visible');
+  const d = await post('/api/grade', {joke});
+  showSpinner('grade-spin', false);
+  setBtn(2, false);
+  if (d.error) { setResult('grade-result', `<span class="error-msg">${d.error}</span>`); return; }
+  function scoreBar(label, dim) {
+    const pct = (dim.score / 10) * 100;
+    return `
+      <div class="score-row">
+        <span class="score-label">${label}</span>
+        <div class="score-bar-wrap"><div class="score-bar" style="width:${pct}%"></div></div>
+        <span class="score-num">${dim.score}</span>
+      </div>
+      <div class="score-note">${dim.note}</div>`;
+  }
+  setResult('grade-result', `
+    <div class="overall-score">${d.overall}</div>
+    <div class="overall-label">Overall Score</div>
+    <div class="verdict-line">${d.verdict}</div>
+    ${scoreBar('Setup', d.setup)}
+    ${scoreBar('Subversion', d.subversion)}
+    ${scoreBar('Punchline', d.punchline)}
+    <div class="rewrite-label">Rewrite</div>
+    <div class="rewrite-text">${d.rewrite}</div>
+  `);
+}
+
+// ── City Wars ──
+let rivalMode = false;
+function toggleRival() {
+  rivalMode = !rivalMode;
+  document.getElementById('rival-wrap').style.display = rivalMode ? 'block' : 'none';
+  document.getElementById('rival-toggle').textContent = rivalMode ? '− Remove rival city' : '+ Add rival city';
+}
+
+async function runCity() {
+  const cityA = document.getElementById('city-a').value.trim();
+  if (!cityA) return;
+  showSpinner('city-spin', true);
+  setBtn(3, true);
+  document.getElementById('city-result').classList.remove('visible');
+  let d;
+  if (rivalMode) {
+    const cityB = document.getElementById('city-b').value.trim();
+    if (!cityB) { showSpinner('city-spin', false); setBtn(3, false); return; }
+    d = await post('/api/city/rivalry', {city_a: cityA, city_b: cityB});
+  } else {
+    d = await post('/api/city', {city: cityA});
+  }
+  showSpinner('city-spin', false);
+  setBtn(3, false);
+  if (d.error) { setResult('city-result', `<span class="error-msg">${d.error}</span>`); return; }
+  if (rivalMode) {
+    const cityB = document.getElementById('city-b').value.trim();
+    setResult('city-result', `
+      <div class="rivalry-section">
+        <div class="rivalry-city">${cityA}</div>
+        <div class="rivalry-roast">${d.city_a_roast}</div>
+      </div>
+      <div class="rivalry-section">
+        <div class="rivalry-city">${cityB}</div>
+        <div class="rivalry-roast">${d.city_b_roast}</div>
+      </div>
+      <div class="rivalry-winner">
+        <div class="rivalry-winner-label">Winner</div>
+        <div class="rivalry-winner-name">${d.winner}</div>
+        <div class="rivalry-winner-reason">${d.winner_reason}</div>
+      </div>
+    `);
+  } else {
+    const tags = (d.traits || []).map(t => `<span class="trait-tag">${t}</span>`).join('');
+    setResult('city-result', `
+      <div class="roast-text">${d.roast}</div>
+      <div class="traits-list">${tags}</div>
+    `);
+  }
+}
+
+// ── Negotiate This ──
+async function runNegotiate() {
+  const offer = document.getElementById('neg-offer').value.trim();
+  if (!offer) return;
+  showSpinner('neg-spin', true);
+  setBtn(4, true);
+  document.getElementById('neg-result').classList.remove('visible');
+  const d = await post('/api/negotiate', {offer_details: offer});
+  showSpinner('neg-spin', false);
+  setBtn(4, false);
+  if (d.error) { setResult('neg-result', `<span class="error-msg">${d.error}</span>`); return; }
+  setResult('neg-result', `
+    <div class="neg-number">${d.ask_number}</div>
+    <div class="neg-label">Ask for this</div>
+    <div class="neg-opening">${d.opening_line}</div>
+    <div class="neg-section-label">Why it's justified</div>
+    <div class="neg-rationale">${d.rationale}</div>
+    <div class="neg-section-label">Fallback</div>
+    <div class="neg-fallback">Don't go below <strong>${d.fallback}</strong></div>
+  `);
+}
+</script>
+</body>
+</html>

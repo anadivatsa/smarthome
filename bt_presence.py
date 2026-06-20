@@ -22,7 +22,8 @@ Environment (load from hub.env + bt_presence.env):
   BT_HOME_SCENE     Default: relax
   BT_AWAY_SCENE     Default: leave
   POLL_INTERVAL     Default: 30  (seconds between checks)
-  AWAY_THRESHOLD    Default: 3   (consecutive misses before declaring away)
+  HOME_THRESHOLD    Default: 2   (consecutive hits to confirm arrival — filters BLE blips)
+  AWAY_THRESHOLD    Default: 6   (consecutive misses before declaring away)
   L2PING_TIMEOUT    Default: 5   (seconds per l2ping attempt)
 """
 
@@ -60,7 +61,8 @@ NEO_API_KEY     = os.getenv("NEO_API_KEY", "").strip()
 BT_HOME_SCENE   = os.getenv("BT_HOME_SCENE", "relax")
 BT_AWAY_SCENE   = os.getenv("BT_AWAY_SCENE", "leave")
 POLL_INTERVAL   = int(os.getenv("POLL_INTERVAL", "30"))
-AWAY_THRESHOLD  = int(os.getenv("AWAY_THRESHOLD", "3"))
+HOME_THRESHOLD  = int(os.getenv("HOME_THRESHOLD", "2"))
+AWAY_THRESHOLD  = int(os.getenv("AWAY_THRESHOLD", "6"))
 L2PING_TIMEOUT  = int(os.getenv("L2PING_TIMEOUT", "5"))
 
 logging.basicConfig(
@@ -111,29 +113,36 @@ def run() -> None:
         sys.exit(1)
 
     log.info("Starting — phone MAC: %s", PHONE_MAC)
-    log.info("Poll every %ds, away after %d misses, home→%s, away→%s",
-             POLL_INTERVAL, AWAY_THRESHOLD, BT_HOME_SCENE, BT_AWAY_SCENE)
+    log.info("Poll every %ds, home after %d hits, away after %d misses, home→%s, away→%s",
+             POLL_INTERVAL, HOME_THRESHOLD, AWAY_THRESHOLD, BT_HOME_SCENE, BT_AWAY_SCENE)
 
     state      = "unknown"  # "home" | "away" | "unknown"
     miss_count = 0
+    hit_count  = 0
 
     while True:
         reachable = _in_range(PHONE_MAC)
 
         if reachable:
             miss_count = 0
+            hit_count += 1
             if state != "home":
-                prev = state
-                state = "home"
-                log.info("📱 Phone detected — %s → home", prev)
-                _hub_bg("/presence", method="POST", body={"state": "home"})
-                if prev != "unknown":
-                    # Only trigger welcome scene if we knew they were away before
-                    log.info("→ triggering scene/%s (arrival)", BT_HOME_SCENE)
-                    _hub_bg(f"/scene/{BT_HOME_SCENE}")
+                if hit_count >= HOME_THRESHOLD:
+                    prev = state
+                    state = "home"
+                    log.info("📱 Phone confirmed home (%d/%d hits) — %s → home",
+                             hit_count, HOME_THRESHOLD, prev)
+                    _hub_bg("/presence", method="POST", body={"state": "home"})
+                    if prev != "unknown":
+                        log.info("→ triggering scene/%s (arrival)", BT_HOME_SCENE)
+                        _hub_bg(f"/scene/{BT_HOME_SCENE}")
+                    else:
+                        log.info("→ startup detection, presence set to home (no scene)")
                 else:
-                    log.info("→ startup detection, presence set to home (no scene)")
+                    log.debug("Hit %d/%d for %s (waiting for confirmation)",
+                              hit_count, HOME_THRESHOLD, PHONE_MAC)
         else:
+            hit_count = 0
             miss_count += 1
             log.debug("Miss %d/%d for %s", miss_count, AWAY_THRESHOLD, PHONE_MAC)
 
